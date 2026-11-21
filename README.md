@@ -17,12 +17,16 @@ bombs).
 - Twin-stick controls on the Vita's two analogue sticks
 - A spring grid under the arena that warps around explosions, bombs and
   gravity wells
-- Six enemy types: seeker (chases you), dodger (steps out of the way of shots),
-  drifter (wanders), splitter (bursts into three shards when hit), shard, and
-  gravity well (pulls in your ship, your shots, geoms and other enemies; it
-  bursts if it swallows too many)
-- Geoms: shot enemies drop them; picking them up raises the score multiplier,
-  which resets when you lose a ship
+- Seven enemy types: seeker (chases you), dodger (steps out of the way of
+  shots), drifter (wanders), splitter (bursts into three shards when hit),
+  shard, snake (only the head can be shot; the tail stops your shots and kills
+  on touch), and gravity well (pulls in your ship, your shots, the sparks, geoms
+  and other enemies; it bursts if it swallows too many)
+- Geoms: shot enemies drop them; picking them up raises the score multiplier
+  and powers up the gun, from a slow single shot to five fast streams (the bars
+  under the multiplier). Both reset when you lose a ship
+- Stay in one spot for about four seconds and enemies spawn on top of you
+- A glow around every enemy, geom, shot and the ship
 - Bombs clear the field (no points); an extra ship every 75,000 points and an
   extra bomb every 100,000
 - Swarms from the four corners every 30 seconds
@@ -92,7 +96,8 @@ test/run_tests.sh app_data /tmp/gwvita_shots
 
 Plays the game headless with simulated sticks (software renderer, address and
 undefined-behaviour sanitizers) and checks starting, firing, scoring, the
-multiplier, bombs, pausing, losing all ships, and the high score being saved
+multiplier, the gun powering up, gravity wells pulling the ship, enemies
+spawning on a camping ship, snakes, bombs, pausing, losing all ships, and the high score being saved
 and loaded. Snapshots of the screens land in the folder given.
 
 ## Layout

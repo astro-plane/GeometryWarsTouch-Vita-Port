@@ -167,6 +167,43 @@ int main(int argc, char **argv)
         run(1); snap("08_title_with_best");
     }
 
+    /* a new game: the gun starts weak, wells pull the ship, campers get company */
+    {
+        long x0, gmax = 0;
+        double t;
+        press(BTN_CROSS); run(0.3);
+        check("the gun starts at the bottom", field("gun=") == 0 && field("power=") == 0);
+        game_test_spawn(6, (float)field("px=") - 300, (float)field("py=") - 150);
+        in.lx = 0.5f; run(1.6); in.lx = 0;
+        snap("09_snake");
+        if (have_data) check("snake spawn sound", strstr(soft_log, "Snake_spawn") != NULL);
+        press(BTN_L); run(0.1);
+        x0 = field("px=");
+        game_test_spawn(5, (float)x0 + 220, (float)field("py="));
+        run(0.7);
+        say("well beside the ship");
+        check("a gravity well drags the ship in", field("px=") > x0 + 30);
+        snap("10_well");
+        press(BTN_L); run(0.1);              /* clear them away */
+        for (t = 0; t < 5.5 && field("scene=") == 1; t += 1.0 / 60) frame();
+        say("sat still 5.5 s");
+        check("sitting still brings enemies down on the ship", field("camps=") >= 1);
+        /* shoot drifters one at a time and pick up what they drop */
+        {
+            int k;
+            for (k = 0; k < 24 && field("scene=") == 1; k++) {
+                in.lx = (k & 1) ? -1 : 1; run(0.4); in.lx = 0;   /* keep moving: no camping */
+                game_test_spawn(2, (float)field("px=") + 110, (float)field("py="));
+                in.rx = 1; run(0.5); in.rx = 0; run(0.6);
+                if (field("gun=") > gmax) gmax = field("gun=");
+            }
+        }
+        say("after shooting drifters");
+        printf("  highest gun level reached: %ld\n", gmax);
+        check("geoms power up the gun", gmax >= 1);
+        if (have_data && gmax >= 1) check("power-up sound", strstr(soft_log, "PowerUp_Weapon") != NULL);
+    }
+
     game_shutdown();
     printf("textures alive after shutdown: %d\n", soft_live_tex);
     check("no textures left", soft_live_tex == 0);

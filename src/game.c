@@ -35,6 +35,11 @@ static int lives, bombs, mult, kills, best_beaten;
 static long next_life, next_bomb;
 static double play_t, spawn_t, rush_t, fire_t;
 static int shot_n;
+static int power;                            /* geoms picked up since the last ship was lost */
+static float camp_x, camp_y;                 /* where the ship has been hanging about... */
+static double camp_t;                        /* ...and for how long */
+static int camps;                            /* times enemies were dropped on a camper */
+static float pull_x, pull_y;                 /* gravity wells' pull on the ship, units/s */
 static const char *music_cur;
 
 /* the ship */
@@ -96,7 +101,7 @@ static void sline(float x0, float y0, float x1, float y1, float w, unsigned c)
 static void gline(float x0, float y0, float x1, float y1, unsigned c, float a)
 {
     float k = scr_h / 544.0f;
-    sline(x0, y0, x1, y1, 10 * k, with_alpha(c, a * 0.30f));
+    sline(x0, y0, x1, y1, 14 * k, with_alpha(c, a * 0.38f));
     sline(x0, y0, x1, y1, 2.4f * k, with_alpha(c, a));
 }
 
@@ -384,7 +389,7 @@ static void parts_draw(void)
 
 /* ---------------------------------------------------------- enemies -- */
 
-enum { E_SEEKER, E_DODGER, E_DRIFTER, E_SPLITTER, E_SHARD, E_WELL, N_ETYPES };
+enum { E_SEEKER, E_DODGER, E_DRIFTER, E_SPLITTER, E_SHARD, E_WELL, E_SNAKE, N_ETYPES };
 
 static const struct {
     unsigned color;
@@ -398,6 +403,7 @@ static const struct {
     { 0xff58c8ffu, 19, 100, 1, "Enemy_splitter_spawn" }, /* splitter: bursts into shards */
     { 0xff8ad8ffu, 9, 50, 1, NULL },                     /* shard: small and quick */
     { 0xff4a3cffu, 26, 150, 18, "Enemy_spawn_red" },     /* well: pulls everything in */
+    { 0x9c78ffffu, 14, 150, 1, "Snake_spawn" },          /* snake: only the head can be shot */
 };
 
 #define MAX_EN 320
@@ -409,6 +415,11 @@ typedef struct {
     int hp;
 } Enemy;
 static Enemy en[MAX_EN];
+/* a snake's tail: a chain of points, each following the one before it. The
+ * tail cannot be hurt, stops shots, and is as deadly to touch as the head. */
+#define SNAKE_SEG 18
+#define SNAKE_GAP 13.0f
+static float tail[MAX_EN][SNAKE_SEG][2];
 static int n_live;
 
 static double sfx_last[64];
@@ -434,6 +445,10 @@ static Enemy *spawn(int type, float x, float y)
             e->warm = type == E_SHARD ? 0.15 : WARM;
             e->aux = type == E_DODGER ? -10 : frand() * 2 * PI;   /* dodger: time of its last dodge */
             e->aux2 = frand() < 0.5f ? -1 : 1;
+            if (type == E_SNAKE) {
+                int k;
+                for (k = 0; k < SNAKE_SEG; k++) { tail[i][k][0] = e->x; tail[i][k][1] = e->y; }
+            }
             if (et[type].spawn_sfx) sfx(et[type].spawn_sfx, 10 + type, 0.12);
             return e;
         }
@@ -484,7 +499,12 @@ static void kill_enemy(Enemy *e, int how)
     burst(e->x, e->y, et[e->type].color, e->type == E_WELL ? 160 : 50, e->type == E_WELL ? 520 : 380);
     grid_force(e->x, e->y, e->type == E_WELL ? 1500.0f : 600.0f, e->type == E_WELL ? 240.0f : 100.0f);
     if (e->type == E_WELL) sfx(how ? "Gravity_well_explode" : "Gravity_well_die", 4, 0.05);
+    else if (e->type == E_SNAKE) sfx("SnakeExplode", 5, 0.05);
     else sfx("Enemy_explode", 5, 0.05);
+    if (e->type == E_SNAKE && how != 2) {    /* the tail goes up with it */
+        int k, idx = (int)(e - en);
+        for (k = 1; k < SNAKE_SEG; k += 3) burst(tail[idx][k][0], tail[idx][k][1], et[E_SNAKE].color, 8, 220);
+    }
     if (how == 0) {
         kills++;
         add_score(et[e->type].points + (e->type == E_WELL ? e->absorbed * 25 : 0));
@@ -502,14 +522,37 @@ static void kill_enemy(Enemy *e, int how)
     }
 }
 
+/* The gun grows with the geoms picked up since the last ship was lost: a
+ * slow single shot to start, then faster, two streams, and wider spreads. */
+static const struct { int need; float interval; int streams; float spread; } gun[] = {
+    {   0, 0.20f, 1, 0.00f },
+    {   8, 0.16f, 1, 0.00f },
+    {  20, 0.14f, 2, 0.00f },
+    {  40, 0.12f, 2, 0.00f },
+    {  70, 0.11f, 3, 0.06f },
+    { 110, 0.10f, 3, 0.07f },
+    { 160, 0.09f, 4, 0.06f },
+    { 230, 0.08f, 5, 0.06f },
+    { 320, 0.07f, 5, 0.08f },
+};
+#define GUN_LEVELS ((int)(sizeof gun / sizeof gun[0]))
+
+static int gun_level(void)
+{
+    int l = 0;
+    while (l + 1 < GUN_LEVELS && power >= gun[l + 1].need) l++;
+    return l;
+}
+
 static void fire(float dx, float dy)
 {
-    int lanes = score >= 100000 ? 3 : 2, l, i;
+    int lv = gun_level(), lanes = gun[lv].streams, l, i;
     float a = atan2f(dy, dx);
     shot_n++;
     if (shot_n % 3 == 1) sfx("Fire_normal", 7, 0);
     for (l = 0; l < lanes; l++) {
-        float off = lanes == 2 ? (l ? 7.0f : -7.0f) : 0, spread = lanes == 3 ? (l - 1) * 0.07f : 0;
+        float off = lanes == 2 ? (l ? 7.0f : -7.0f) : 0;
+        float spread = lanes > 2 ? (l - (lanes - 1) / 2.0f) * gun[lv].spread : 0;
         float b = a + spread, c = cosf(b), s = sinf(b);
         for (i = 0; i < MAX_BUL; i++)
             if (!bul[i].alive) {
@@ -578,10 +621,11 @@ static void spawn_wave(void)
     w[E_DODGER] = play_t > 22 ? 2.2f : 0;
     w[E_SPLITTER] = play_t > 40 ? 1.4f : 0;
     w[E_WELL] = play_t > 55 && count_type(E_WELL) < 3 ? 0.45f : 0;
+    w[E_SNAKE] = play_t > 30 && count_type(E_SNAKE) < 6 ? 1.1f : 0;
     for (i = 0; i < N_ETYPES; i++) total += w[i];
     pick = frand() * total;
     for (type = 0; type < N_ETYPES - 1 && pick >= w[type]; type++) pick -= w[type];
-    n = type == E_WELL ? 1 : 1 + (int)(play_t / 35);
+    n = type == E_WELL ? 1 : type == E_SNAKE ? 1 + (play_t > 90) : 1 + (int)(play_t / 35);
     if (n > 6) n = 6;
     far_point(&x, &y);
     for (i = 0; i < n; i++)
@@ -609,6 +653,7 @@ static void ship_die(void)
     p_alive = 0;
     respawn_t = 2.2;
     mult = 1;
+    power = 0;                               /* the gun starts over */
     sfx("Player_explode", 9, 0);
     burst(px, py, 0xffffffffu, 220, 650);
     burst(px, py, 0xffd060ffu, 160, 450);
@@ -620,6 +665,7 @@ static void update_enemies(float dt)
 {
     int i, j;
     n_live = 0;
+    pull_x = pull_y = 0;                     /* summed again below, used next frame */
     for (i = 0; i < MAX_EN; i++) {
         Enemy *e = &en[i];
         float dx, dy, d;
@@ -679,20 +725,37 @@ static void update_enemies(float dt)
             e->ang += 9.0f * dt;
             break;
         }
+        case E_SNAKE: {                      /* slithers towards the ship, weaving */
+            float h = atan2f(e->vy, e->vx), want, turn;
+            if (e->vx == 0 && e->vy == 0) h = e->aux;
+            want = (p_alive ? atan2f(dy, dx) : e->aux) + sinf((float)e->t * 3.2f + e->aux2) * 1.1f;
+            turn = remainderf(want - h, 2 * PI);
+            h += clampf(turn, -3.0f * dt, 3.0f * dt);
+            e->vx = cosf(h) * 175; e->vy = sinf(h) * 175;
+            e->ang = h;
+            break;
+        }
         case E_WELL:
             e->vx = (dx / d) * 22; e->vy = (dy / d) * 22;
             grid_force(e->x, e->y, -2400.0f * dt, 200 + e->r * 2);   /* a dent in the grid */
-            if (p_alive && d < 380) {        /* pull the ship */
-                float f = 520 * (1 - d / 380);
-                pvx -= dx / d * f * dt; pvy -= dy / d * f * dt;
+            if (p_alive && d < 460) {        /* pull the ship: a drift it has to fight */
+                float f = 270 * (1 - d / 460) * (1 - d / 460) + 35 * (1 - d / 460);
+                pull_x -= dx / d * f; pull_y -= dy / d * f;
+            }
+            for (j = 0; j < n_parts; j++) {  /* and the sparks */
+                float sx = e->x - parts[j].x, sy = e->y - parts[j].y, sd = sx * sx + sy * sy;
+                if (sd < 300.0f * 300.0f && sd > 1) {
+                    sd = sqrtf(sd);
+                    parts[j].vx += sx / sd * 900 * dt; parts[j].vy += sy / sd * 900 * dt;
+                }
             }
             for (j = 0; j < MAX_EN; j++) {   /* swallow others that come too close */
                 Enemy *o = &en[j];
                 float ox, oy, od;
                 if (!o->alive || o == e || o->type == E_WELL || o->warm > 0) continue;
                 ox = o->x - e->x; oy = o->y - e->y; od = ox * ox + oy * oy;
-                if (od < 260.0f * 260.0f) {  /* draw them in */
-                    float dd = sqrtf(od) + 0.01f, f = 260 * (1 - dd / 260);
+                if (od < 340.0f * 340.0f) {  /* draw them in */
+                    float dd = sqrtf(od) + 0.01f, f = 300 * (1 - dd / 340);
                     o->vx -= ox / dd * f * dt * 3; o->vy -= oy / dd * f * dt * 3;
                 }
                 if (od < (e->r + o->r) * (e->r + o->r)) {
@@ -716,6 +779,21 @@ static void update_enemies(float dt)
         if (e->x > ARENA_W - e->r) { e->x = ARENA_W - e->r; e->vx = -fabsf(e->vx); if (e->type == E_DRIFTER) e->aux = PI - e->aux; }
         if (e->y < e->r) { e->y = e->r; e->vy = fabsf(e->vy); if (e->type == E_DRIFTER) e->aux = -e->aux; }
         if (e->y > ARENA_H - e->r) { e->y = ARENA_H - e->r; e->vy = -fabsf(e->vy); if (e->type == E_DRIFTER) e->aux = -e->aux; }
+        if (e->type == E_SNAKE) {            /* the tail follows */
+            int k;
+            for (k = 0; k < SNAKE_SEG; k++) {
+                float ax = k ? tail[i][k - 1][0] : e->x, ay = k ? tail[i][k - 1][1] : e->y;
+                float tx = tail[i][k][0] - ax, ty = tail[i][k][1] - ay, td = sqrtf(tx * tx + ty * ty);
+                if (td > SNAKE_GAP) {
+                    tail[i][k][0] = ax + tx / td * SNAKE_GAP; tail[i][k][1] = ay + ty / td * SNAKE_GAP;
+                }
+            }
+            if (p_alive && invul_t <= 0)
+                for (k = 1; k < SNAKE_SEG; k++) {
+                    float hx = px - tail[i][k][0], hy = py - tail[i][k][1];
+                    if (hx * hx + hy * hy < 16.0f * 16.0f) { ship_die(); return; }
+                }
+        }
         if (p_alive && invul_t <= 0) {       /* touching the ship */
             float hx = px - e->x, hy = py - e->y, rr = e->r * 0.8f + 11;
             if (hx * hx + hy * hy < rr * rr) { ship_die(); return; }
@@ -724,11 +802,11 @@ static void update_enemies(float dt)
     /* keep chasers from piling into one spot */
     for (i = 0; i < MAX_EN; i++) {
         Enemy *a = &en[i];
-        if (!a->alive || a->warm > 0 || a->type == E_WELL || a->type == E_DRIFTER) continue;
+        if (!a->alive || a->warm > 0 || a->type == E_WELL || a->type == E_DRIFTER || a->type == E_SNAKE) continue;
         for (j = i + 1; j < MAX_EN; j++) {
             Enemy *b = &en[j];
             float dx, dy, d2, rr;
-            if (!b->alive || b->warm > 0 || b->type == E_WELL || b->type == E_DRIFTER) continue;
+            if (!b->alive || b->warm > 0 || b->type == E_WELL || b->type == E_DRIFTER || b->type == E_SNAKE) continue;
             dx = b->x - a->x; dy = b->y - a->y; d2 = dx * dx + dy * dy; rr = a->r + b->r;
             if (d2 < rr * rr && d2 > 0.01f) {
                 float d = sqrtf(d2), push = (rr - d) * 0.5f;
@@ -771,6 +849,18 @@ static void update_bullets(float dt)
             float dx, dy;
             if (!e->alive || e->warm > 0) continue;
             dx = e->x - b->x; dy = e->y - b->y;
+            if (e->type == E_SNAKE) {        /* the tail stops shots, unharmed */
+                int k, hit = 0;
+                for (k = 1; k < SNAKE_SEG && !hit; k++) {
+                    float tx = tail[j][k][0] - b->x, ty = tail[j][k][1] - b->y;
+                    hit = tx * tx + ty * ty < 11.0f * 11.0f;
+                }
+                if (hit) {
+                    b->alive = 0;
+                    burst(b->x, b->y, et[E_SNAKE].color, 3, 150);
+                    break;
+                }
+            }
             if (dx * dx + dy * dy < (e->r + 4) * (e->r + 4)) {
                 b->alive = 0;
                 if (--e->hp <= 0) {
@@ -808,9 +898,12 @@ static void update_geoms(float dt)
             dx = px - g->x; dy = py - g->y; d = sqrtf(dx * dx + dy * dy) + 0.01f;
             if (d < 150) { g->vx += dx / d * 1400 * dt; g->vy += dy / d * 1400 * dt; }
             if (d < 26) {
+                int before = gun_level();
                 g->alive = 0;
                 mult++;
+                power++;
                 sfx("Pickup_geom", 14, 0.05);
+                if (gun_level() > before) sfx("PowerUp_Weapon", 16, 0);   /* the gun steps up */
                 if (mult % 10 == 0) sfx("Multiplier", 15, 0);
                 continue;
             }
@@ -840,6 +933,7 @@ static void update_ship(const PlatInput *in, float dt)
                 lives--;
                 p_alive = 1; invul_t = 2.0;
                 px = ARENA_W / 2; py = ARENA_H / 2; pvx = pvy = 0;
+                camp_x = px; camp_y = py; camp_t = 0;
                 sfx("Player_Spawn", 9, 0);
                 spawn_t = 1.5;
             } else {
@@ -870,13 +964,15 @@ static void update_ship(const PlatInput *in, float dt)
     } else {
         pvx *= expf(-10 * dt); pvy *= expf(-10 * dt);
     }
-    px = clampf(px + pvx * dt, 12, ARENA_W - 12);
-    py = clampf(py + pvy * dt, 12, ARENA_H - 12);
+    /* the wells' pull is added on top of the ship's own movement, so steering
+     * cannot simply cancel it */
+    px = clampf(px + (pvx + pull_x) * dt, 12, ARENA_W - 12);
+    py = clampf(py + (pvy + pull_y) * dt, 12, ARENA_H - 12);
     fire_t -= dt;
     m = sqrtf(fx * fx + fy * fy);
     if (m > 0.35f && fire_t <= 0) {
         fire(fx, fy);
-        fire_t = 0.085;
+        fire_t = gun[gun_level()].interval;
     }
     if (in->pressed & (BTN_L | BTN_R)) bomb();
 }
@@ -890,6 +986,7 @@ static const float SH_INNER[] = { 0, -0.55f, 0.55f, 0, 0, 0.55f, -0.55f, 0 };
 static const float SH_TRI[] = { 1, 0, -0.6f, 0.8f, -0.6f, -0.8f };
 static const float SH_BLADE[] = { 0, 0, 1, 0, 0.35f, 0.55f };
 static const float SH_GEOM[] = { 0, -1, 0.5f, 0, 0, 1, -0.5f, 0 };
+static const float SH_HEAD[] = { 1.1f, 0, -0.3f, 0.75f, -0.7f, 0, -0.3f, -0.75f };
 static const float SH_X1[] = { -0.8f, -0.8f, 0.8f, 0.8f };
 static const float SH_X2[] = { 0.8f, -0.8f, -0.8f, 0.8f };
 
@@ -923,10 +1020,24 @@ static void draw_enemy(const Enemy *e)
     case E_SHARD:
         wshape(x, y, r, e->ang, SH_TRI, 3, 1, c, a);
         break;
+    case E_SNAKE: {
+        int idx = (int)(e - en);
+        if (e->warm <= 0) {
+            float lx = x, ly = y;
+            for (k = 0; k < SNAKE_SEG; k++) {    /* the tail, tapering off */
+                float tx = tail[idx][k][0], ty = tail[idx][k][1], f = 1 - (float)k / SNAKE_SEG;
+                gline(wx(lx), wy(ly), wx(tx), wy(ty), et[E_SNAKE].color, a * (0.35f + 0.5f * f));
+                if (k % 2 == 0)
+                    wshape(tx, ty, (4 + 5 * f), e->ang, SH_TRI, 3, 1, 0x6c88ffffu, a * (0.4f + 0.6f * f));
+                lx = tx; ly = ty;
+            }
+        }
+        wshape(x, y, r, e->ang, SH_HEAD, 4, 1, c, a);
+        break;
+    }
     case E_WELL:
         wcircle(x, y, r, 20, c, a);
         wcircle(x, y, r * (0.55f + 0.12f * sinf((float)e->t * 6)), 14, c, a * 0.8f);
-        sdot(wx(x), wy(y), r * 2.4f * zoom, with_alpha(c, 0.35f * a));
         break;
     }
 }
@@ -942,6 +1053,13 @@ static void hud(void)
     text(16 * k, 12 * k, 22 * k, 0, 0xffffffffu, 1, num);
     snprintf(buf, sizeof buf, "x%d", mult);
     text(16 * k, 42 * k, 16 * k, 0, 0xffe070ffu, 1, buf);
+    {                                        /* the gun's power: one bar per level */
+        int lv = gun_level(), b;
+        for (b = 1; b < GUN_LEVELS; b++) {
+            float bx = 16 * k + (b - 1) * 13 * k, by = 68 * k;
+            gline(bx, by, bx, by + 12 * k, b <= lv ? 0xe8ff60ffu : 0x40507aff, b <= lv ? 1 : 0.6f);
+        }
+    }
     fmt_num(num, sizeof num, best > score ? best : score);
     snprintf(buf, sizeof buf, "HI %s", num);
     text(scr_w - 16 * k, 12 * k, 16 * k, 2, 0x9ad0ffffu, 0.9f, buf);
@@ -981,6 +1099,7 @@ static void start_game(void)
     play_t = 0; spawn_t = 1.2; rush_t = 35; fire_t = 0; shot_n = 0;
     px = ARENA_W / 2; py = ARENA_H / 2; pvx = pvy = 0; pang = -PI / 2;
     p_alive = 1; invul_t = 1.5;
+    power = 0; camps = 0; camp_t = 0; camp_x = px; camp_y = py; pull_x = pull_y = 0;
     cam_x = px; cam_y = py;
     paused = 0;
     scene = SC_PLAY;
@@ -1009,6 +1128,26 @@ static void draw_world(void)
     gline(wx(ARENA_W), wy(0), wx(ARENA_W), wy(ARENA_H), 0x9ad0ffffu, 1);
     gline(wx(ARENA_W), wy(ARENA_H), wx(0), wy(ARENA_H), 0x9ad0ffffu, 1);
     gline(wx(0), wy(ARENA_H), wx(0), wy(0), 0x9ad0ffffu, 1);
+    /* a soft glow behind every enemy, geom and the ship (all in one batch) */
+    for (i = 0; i < MAX_EN; i++)
+        if (en[i].alive) {
+            const Enemy *e = &en[i];
+            float a = e->warm > 0 ? 0.25f : 1, r = e->r * zoom * (e->type == E_WELL ? 6 : 4.2f);
+            sdot(wx(e->x), wy(e->y), r, with_alpha(e->flash > 0 ? 0xffffffffu : et[e->type].color, 0.45f * a));
+            if (e->type == E_SNAKE && e->warm <= 0) {
+                int k;
+                for (k = 2; k < SNAKE_SEG; k += 3)
+                    sdot(wx(tail[i][k][0]), wy(tail[i][k][1]), 38 * zoom, with_alpha(et[E_SNAKE].color, 0.18f));
+            }
+        }
+    for (i = 0; i < MAX_GEOM; i++)
+        if (geo[i].alive)
+            sdot(wx(geo[i].x), wy(geo[i].y), 40 * zoom, with_alpha(0xe8ff60ffu, 0.5f));
+    if (p_alive)
+        sdot(wx(px), wy(py), 90 * zoom, 0xffffff70u);
+    for (i = 0; i < MAX_BUL; i++)
+        if (bul[i].alive)
+            sdot(wx(bul[i].x), wy(bul[i].y), 22 * zoom, 0xffd06040u);
     for (i = 0; i < MAX_GEOM; i++)
         if (geo[i].alive) {
             float a = geo[i].t > 5 ? (((int)(geo[i].t * 10) & 1) ? 0.3f : 1) : 1;
@@ -1130,6 +1269,18 @@ int game_frame(double dt, const PlatInput *in)
                 spawn_rush();
                 rush_t = 30;
             }
+            /* sitting in one spot: after a while, a pack appears right on top of
+             * the ship (they take WARM seconds to arrive, time to get out) */
+            if (fabsf(px - camp_x) > 120 || fabsf(py - camp_y) > 120) {
+                camp_x = px; camp_y = py; camp_t = 0;
+            } else if ((camp_t += dt) > 4.0) {
+                int k, n = 3 + (int)(play_t / 40);
+                if (n > 8) n = 8;
+                for (k = 0; k < n; k++)
+                    spawn(play_t > 30 && (k & 1) ? E_DODGER : E_SEEKER, px + frange(-35, 35), py + frange(-35, 35));
+                camps++;
+                camp_t = 1.5;                /* the next pack 2.5 s later, if still there */
+            }
         }
         update_ship(in, fdt);
         if (scene != SC_PLAY) break;
@@ -1197,6 +1348,15 @@ void game_debug(char *buf, int n)
     for (i = 0; i < MAX_BUL; i++) nb += bul[i].alive;
     for (i = 0; i < MAX_GEOM; i++) ng += geo[i].alive;
     snprintf(buf, (size_t)n, "scene=%d paused=%d score=%ld mult=%d lives=%d bombs=%d enemies=%d kills=%d "
-             "bullets=%d geoms=%d particles=%d alive=%d playt=%.1f best=%ld",
-             scene, paused, score, mult, lives, bombs, ne, kills, nb, ng, n_parts, p_alive, play_t, best);
+             "bullets=%d geoms=%d particles=%d alive=%d playt=%.1f best=%ld power=%d gun=%d camps=%d "
+             "px=%.0f py=%.0f",
+             scene, paused, score, mult, lives, bombs, ne, kills, nb, ng, n_parts, p_alive, play_t, best,
+             power, gun_level(), camps, px, py);
+}
+
+/* tests only: put an enemy on the field, ready to go */
+void game_test_spawn(int type, float x, float y)
+{
+    Enemy *e = spawn(type, x, y);
+    if (e) e->warm = 0;
 }
