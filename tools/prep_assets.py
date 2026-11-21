@@ -71,6 +71,8 @@ def main():
     ap.add_argument('ipa', help='GWarsTouch_v1.2.0_os30.ipa (your own copy)')
     ap.add_argument('out', help='output folder, e.g. app_data')
     ap.add_argument('--ffmpeg', default=shutil.which('ffmpeg'), help='ffmpeg, for the music')
+    ap.add_argument('--builtin-vorbis', action='store_true',
+                    help="use ffmpeg's own Vorbis encoder straight away (it is tried anyway when libvorbis is missing)")
     a = ap.parse_args()
 
     z = zipfile.ZipFile(a.ipa)
@@ -124,9 +126,19 @@ def main():
                 with open(src, 'wb') as f:
                     f.write(z.read(n))
                 tmp = dst + '.part'
-                r = subprocess.run([a.ffmpeg, '-v', 'error', '-y', '-i', src, '-vn', '-ar', '44100',
-                                    '-c:a', 'libvorbis', '-q:a', '4', '-f', 'ogg', tmp])
+                # libvorbis if this ffmpeg has it; otherwise ffmpeg's own Vorbis
+                # encoder, which only takes stereo (the tracks are mono: copied to both)
+                encoders = [['-c:a', 'libvorbis', '-q:a', '4'],
+                            ['-ac', '2', '-c:a', 'vorbis', '-strict', '-2', '-q:a', '5']]
+                if a.builtin_vorbis:
+                    encoders = encoders[1:]
+                for enc in encoders:
+                    r = subprocess.run([a.ffmpeg, '-v', 'error', '-y', '-i', src, '-vn', '-ar', '44100'] +
+                                       enc + ['-f', 'ogg', tmp], stderr=subprocess.PIPE, text=True)
+                    if r.returncode == 0:
+                        break
                 if r.returncode != 0:
+                    print(r.stderr.strip()[-300:])
                     print('  ffmpeg failed on %s' % name)
                     tracks.pop()
                     continue

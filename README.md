@@ -38,7 +38,8 @@ the original.
 1. **Your own copy of the game**: `GWarsTouch_v1.2.0_os30.ipa`, GWars:Touch
    version 1.2.0 (bundle id `com.activision.gw3pad`), about 42 MB.
 2. **Python 3** for the converter; **ffmpeg** for the music (the sound effects
-   need nothing else). On macOS: `brew install ffmpeg`.
+   need nothing else). Any ffmpeg will do: the converter uses libvorbis when
+   ffmpeg has it, and ffmpeg's own Vorbis encoder when it does not.
 3. **VitaSDK**, with: `vdpm install sdl2 libvorbis libogg`
 
 ## Making app_data
