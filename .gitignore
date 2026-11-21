@@ -1,0 +1,8 @@
+# the game's converted sound and your copy of the game: never commit these
+app_data/
+*.ipa
+# builds
+build/
+build-*/
+*.vpk
+gwvita_save.txt
