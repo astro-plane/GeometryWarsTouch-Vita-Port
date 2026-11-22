@@ -43,6 +43,18 @@ void plat_end(void);
 void plat_sprites(PlatTex *t, int sx, int sy, int sw, int sh, const PlatSprite *s, int n, int blend);
 void plat_fill(float x, float y, float w, float h, unsigned rgba);
 
+/* One background job at a time on a helper core (plat_sdl.c), or run on the
+ * spot (test/plat_soft.c, or when threads are off).  plat_job_wait returns
+ * once it is done; a job must not call the drawing functions. */
+void plat_job_start(void (*fn)(void *), void *arg);
+void plat_job_wait(void);
+
+/* The frame loop.  The game (frame(), including its drawing calls, which are
+ * recorded) runs on its own thread, while this thread hands the previous
+ * frame to the GPU and waits for the display; frame() returns 0 to quit.
+ * GW_THREADS=0 in the environment runs everything on one thread. */
+void plat_run(int (*frame)(double dt, const PlatInput *in));
+
 void plat_sfx(const char *name);             /* app_data/sfx/<name>.wav */
 int plat_music_play(const char *path);       /* Ogg Vorbis, 44.1 kHz; 0 on success */
 void plat_music_stop(void);

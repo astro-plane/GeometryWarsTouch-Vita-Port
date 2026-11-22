@@ -59,26 +59,57 @@ static float clampf(float v, float a, float b) { return v < a ? a : v > b ? b : 
 enum { K_LINE, K_DOT, K_SOLID };
 static const int ksrc[3][4] = { { 0, 0, 64, 32 }, { 64, 0, 32, 32 }, { 100, 4, 24, 24 } };
 
-#define MAX_SPR 20000
+/* A frame is drawn in two lists that are built at the same time on two
+ * cores: the grid (by a helper, see grid_job) and everything else. Both are
+ * only handed to the platform at the end of the frame, grid first. The main
+ * list is a series of runs: sprites of one kind and blend, or a filled
+ * rectangle. */
+#define MAX_SPR 32768
+#define MAX_RUN 1024
 static PlatSprite spr[MAX_SPR];
-static int n_spr, cur_kind = -1, cur_blend = -1;
+static struct { int kind, blend, start, n; float fx, fy, fw, fh; unsigned fc; } run[MAX_RUN];
+static int n_spr, n_run, cur_kind = -1, cur_blend = -1, run_start;
+static PlatSprite spare;                     /* where sprites go once the list is full */
 
-static void flush(void)
+static void flush(void)                      /* close the current run */
 {
-    if (n_spr && cur_kind >= 0)
-        plat_sprites(atlas, ksrc[cur_kind][0], ksrc[cur_kind][1], ksrc[cur_kind][2], ksrc[cur_kind][3],
-                     spr, n_spr, cur_blend);
-    n_spr = 0;
+    if (n_spr > run_start && cur_kind >= 0 && n_run < MAX_RUN) {
+        run[n_run].kind = cur_kind; run[n_run].blend = cur_blend;
+        run[n_run].start = run_start; run[n_run].n = n_spr - run_start;
+        n_run++;
+    }
+    run_start = n_spr;
 }
 
 static PlatSprite *push(int kind, int blend)
 {
-    if (kind != cur_kind || blend != cur_blend || n_spr == MAX_SPR) {
+    if (kind != cur_kind || blend != cur_blend) {
         flush();
         cur_kind = kind;
         cur_blend = blend;
     }
+    if (n_spr == MAX_SPR) return &spare;
     return &spr[n_spr++];
+}
+
+static void draw_reset(void)
+{
+    n_spr = n_run = run_start = 0;
+    cur_kind = cur_blend = -1;
+}
+
+static void draw_submit(void)                /* the main list, in order */
+{
+    int r;
+    flush();
+    for (r = 0; r < n_run; r++) {
+        int kd = run[r].kind;
+        if (kd < 0)
+            plat_fill(run[r].fx, run[r].fy, run[r].fw, run[r].fh, run[r].fc);
+        else
+            plat_sprites(atlas, ksrc[kd][0], ksrc[kd][1], ksrc[kd][2], ksrc[kd][3],
+                         spr + run[r].start, run[r].n, run[r].blend);
+    }
 }
 
 static unsigned with_alpha(unsigned c, float a)
@@ -114,7 +145,12 @@ static void sdot(float x, float y, float size, unsigned c)
 static void sfill(float x, float y, float w, float h, unsigned c)
 {
     flush();
-    plat_fill(x, y, w, h, c);
+    cur_kind = cur_blend = -1;               /* the next sprite starts a new run */
+    if (n_run < MAX_RUN) {
+        run[n_run].kind = -1; run[n_run].start = run[n_run].n = 0;
+        run[n_run].fx = x; run[n_run].fy = y; run[n_run].fw = w; run[n_run].fh = h; run[n_run].fc = c;
+        n_run++;
+    }
 }
 
 static float wx(float x) { return (x - cam_x) * zoom + scr_w / 2.0f; }
@@ -300,6 +336,24 @@ static void grid_update(float dt)
     }
 }
 
+/* the grid's own sprite list, filled by grid_job (possibly on another core:
+ * it touches nothing but the grid, the camera, and this list) */
+#define MAX_GSPR (2 * (GX * GY * 2))
+static PlatSprite gspr[MAX_GSPR];
+static int n_gspr;
+
+static void gsline(float x0, float y0, float x1, float y1, float w, unsigned c)
+{
+    float dx = x1 - x0, dy = y1 - y0;
+    PlatSprite *s;
+    if (n_gspr == MAX_GSPR) return;
+    s = &gspr[n_gspr++];
+    s->cx = (x0 + x1) / 2; s->cy = (y0 + y1) / 2;
+    s->w = sqrtf(dx * dx + dy * dy) + w; s->h = w;
+    s->ang = atan2f(dy, dx);
+    s->rgba = c;
+}
+
 static void grid_seg(int i0, int j0, int i1, int j1, int major)
 {
     float x0 = wx(gpx[j0][i0]), y0 = wy(gpy[j0][i0]), x1 = wx(gpx[j1][i1]), y1 = wy(gpy[j1][i1]);
@@ -310,19 +364,31 @@ static void grid_seg(int i0, int j0, int i1, int j1, int major)
     if ((x0 < -20 && x1 < -20) || (x0 > scr_w + 20 && x1 > scr_w + 20) ||
         (y0 < -20 && y1 < -20) || (y0 > scr_h + 20 && y1 > scr_h + 20))
         return;
-    sline(x0, y0, x1, y1, 6 * k, with_alpha(c, (major ? 0.10f : 0.05f) + hot * 0.15f));
-    sline(x0, y0, x1, y1, 1.6f * k, with_alpha(c, (major ? 0.42f : 0.22f) + hot * 0.5f));
+    gsline(x0, y0, x1, y1, 6 * k, with_alpha(c, (major ? 0.10f : 0.05f) + hot * 0.15f));
+    gsline(x0, y0, x1, y1, 1.6f * k, with_alpha(c, (major ? 0.42f : 0.22f) + hot * 0.5f));
 }
 
 static void grid_draw(void)
 {
     int i, j;
+    n_gspr = 0;
     for (j = 0; j < GY; j++)
         for (i = 0; i < GX - 1; i++)
             grid_seg(i, j, i + 1, j, j % 5 == 0);
     for (i = 0; i < GX; i++)
         for (j = 0; j < GY - 1; j++)
             grid_seg(i, j, i, j + 1, i % 5 == 0);
+}
+
+/* The grid's work for one frame: move the springs, then build its sprites.
+ * Runs on a helper core while this core draws everything else. Nothing may
+ * touch the grid or the camera between plat_job_start and plat_job_wait. */
+static float grid_dt;
+static void grid_job(void *arg)
+{
+    (void)arg;
+    if (grid_dt > 0) grid_update(grid_dt);
+    grid_draw();
 }
 
 /* -------------------------------------------------------- particles -- */
@@ -1123,7 +1189,6 @@ static void draw_world(void)
 {
     int i;
     float k = scr_h / 544.0f;
-    grid_draw();
     gline(wx(0), wy(0), wx(ARENA_W), wy(0), 0x9ad0ffffu, 1);      /* the arena's wall */
     gline(wx(ARENA_W), wy(0), wx(ARENA_W), wy(ARENA_H), 0x9ad0ffffu, 1);
     gline(wx(ARENA_W), wy(ARENA_H), wx(0), wy(ARENA_H), 0x9ad0ffffu, 1);
@@ -1233,11 +1298,12 @@ int game_frame(double dt, const PlatInput *in)
         music(m);
     }
 
+    grid_dt = 0;                             /* set below by scenes that move the grid */
     switch (scene) {
     case SC_TITLE:
         if (frand() < fdt * 1.5f)            /* the grid ripples on its own */
             grid_force(frange(100, ARENA_W - 100), frange(100, ARENA_H - 100), frange(800, 2200), 180);
-        grid_update(fdt);
+        grid_dt = fdt;
         parts_update(fdt);
         if (scene_t > 0.3 && ((in->pressed & (BTN_CROSS | BTN_START)) || tap))
             start_game();
@@ -1287,12 +1353,12 @@ int game_frame(double dt, const PlatInput *in)
         update_bullets(fdt);
         update_enemies(fdt);
         update_geoms(fdt);
-        grid_update(fdt);
+        grid_dt = fdt;
         parts_update(fdt);
         update_camera(fdt);
         break;
     case SC_OVER:
-        grid_update(fdt);
+        grid_dt = fdt;
         parts_update(fdt);
         if (scene_t > 1.5 && ((in->pressed & (BTN_CROSS | BTN_START)) || tap)) {
             scene = SC_TITLE; scene_t = 0;
@@ -1302,11 +1368,14 @@ int game_frame(double dt, const PlatInput *in)
     }
 
     /* ---- draw ---- */
-    plat_begin();
     if (scene == SC_TITLE) {
         cam_x += (ARENA_W / 2 - cam_x) * clampf(fdt * 2, 0, 1);
         cam_y += (ARENA_H / 2 - cam_y) * clampf(fdt * 2, 0, 1);
-        grid_draw();
+    }
+    /* the grid moves and draws itself on another core meanwhile */
+    plat_job_start(grid_job, NULL);
+    draw_reset();
+    if (scene == SC_TITLE) {
         parts_draw();
         text(scr_w / 2.0f, 150 * k, 60 * k, 1, 0x7cd8ffffu, 1, GAME_TITLE);
         if (((int)(scene_t * 2)) & 1 || scene_t < 0.5)
@@ -1336,7 +1405,11 @@ int game_frame(double dt, const PlatInput *in)
                 text(scr_w / 2.0f, 380 * k, 16 * k, 1, 0x9ad0ffffu, 1, "PRESS X");
         }
     }
-    flush();
+    plat_job_wait();
+    plat_begin();
+    if (n_gspr)
+        plat_sprites(atlas, ksrc[K_LINE][0], ksrc[K_LINE][1], ksrc[K_LINE][2], ksrc[K_LINE][3], gspr, n_gspr, 1);
+    draw_submit();
     plat_end();
     return 1;
 }

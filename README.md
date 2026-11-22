@@ -100,6 +100,14 @@ multiplier, the gun powering up, gravity wells pulling the ship, enemies
 spawning on a camping ship, snakes, bombs, pausing, losing all ships, and the high score being saved
 and loaded. Snapshots of the screens land in the folder given.
 
+## Threads
+
+The game runs on three of the Vita's cores: the main thread hands each
+finished frame to the GPU and waits for the display; the game thread runs the
+game and builds the next frame's vertices meanwhile; and a helper moves the
+background grid and builds its lines at the same time as the game draws
+everything else. Set `GW_THREADS=0` (desktop) to run everything on one thread.
+
 ## Layout
 
 ```

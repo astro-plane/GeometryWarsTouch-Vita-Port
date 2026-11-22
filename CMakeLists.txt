@@ -49,6 +49,7 @@ else()
     SceDisplay_stub SceCtrl_stub SceAudio_stub SceAudioIn_stub SceSysmodule_stub
     SceGxm_stub SceCommonDialog_stub SceAppMgr_stub SceAppUtil_stub SceTouch_stub
     SceHid_stub SceMotion_stub ScePower_stub SceIme_stub SceProcessmgr_stub
+    SceLibKernel_stub SceKernelThreadMgr_stub     # pinning the threads to cores
   )
 
   set(VPK_FILES

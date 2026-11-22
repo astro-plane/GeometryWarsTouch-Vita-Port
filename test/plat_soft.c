@@ -129,3 +129,7 @@ void soft_dump(const char *path)
     img.width = W; img.height = H; img.format = PNG_FORMAT_RGBA;
     png_image_write_to_file(&img, path, 0, fb, 0, NULL);
 }
+
+/* jobs run on the spot here: the tests stay deterministic */
+void plat_job_start(void (*fn)(void *), void *arg) { fn(arg); }
+void plat_job_wait(void) {}

@@ -454,15 +454,174 @@ void plat_tex_free(PlatTex *t)
     }
 }
 
-void plat_begin(void)
+/* ------------------------------------------------- threads and frames --
+ *
+ * Three threads, on three of the Vita's cores:
+ *   this one (main)   hands the finished frame to the GPU, waits for the
+ *                     display, reads the controls
+ *   the game thread   runs frame(): the game and its drawing, which is
+ *                     recorded (vertices and all) rather than drawn
+ *   a helper          runs one background job at a time for the game (the
+ *                     grid)
+ * Frames go round three buffers: one being recorded, one finished and
+ * waiting, one being drawn.  The game is never more than a frame ahead. */
+
+typedef struct {
+    int fill;                        /* 0 geometry, 1 filled rectangle */
+    PlatTex *t;
+    int blend, v0, quads;
+    SDL_FRect rc;
+    Uint32 rgba;
+} Cmd;
+typedef struct {
+    SDL_Vertex *v;
+    int nv, capv;
+    Cmd *c;
+    int nc, capc;
+} Frame;
+
+static int threaded;
+static Frame frames[3];
+static int f_write = 0, f_ready = -1, f_show = 2;
+static SDL_mutex *f_lock;
+static SDL_cond *f_cond;             /* a frame was published or taken, or the game ended */
+static int game_over_flag;           /* the game thread has finished */
+static PlatInput shared_in;          /* controls, from this thread to the game's */
+
+static SDL_Thread *helper;
+static SDL_sem *job_go, *job_done;
+static void (*job_fn)(void *);
+static void *job_arg;
+static int job_busy, helper_quit;
+
+#ifdef __vita__
+#include <psp2/kernel/threadmgr.h>
+static void pin_to_core(int core)    /* 0..2: the cores a game may use */
+{
+    static const int mask[3] = { SCE_KERNEL_CPU_MASK_USER_0, SCE_KERNEL_CPU_MASK_USER_1, SCE_KERNEL_CPU_MASK_USER_2 };
+    sceKernelChangeThreadCpuAffinityMask(sceKernelGetThreadId(), mask[core]);
+}
+#else
+static void pin_to_core(int core) { (void)core; }
+#endif
+
+static int helper_main(void *ud)
+{
+    (void)ud;
+    pin_to_core(2);
+    for (;;) {
+        SDL_SemWait(job_go);
+        if (helper_quit)
+            break;
+        job_fn(job_arg);
+        SDL_SemPost(job_done);
+    }
+    return 0;
+}
+
+void plat_job_start(void (*fn)(void *), void *arg)
+{
+    if (!helper) {                   /* no helper: do it now */
+        fn(arg);
+        return;
+    }
+    job_fn = fn; job_arg = arg; job_busy = 1;
+    SDL_SemPost(job_go);
+}
+
+void plat_job_wait(void)
+{
+    if (job_busy) {
+        SDL_SemWait(job_done);
+        job_busy = 0;
+    }
+}
+
+static void *grow(void *p, int *cap, int need, size_t each)
+{
+    int c = *cap ? *cap : 1024;
+    void *q;
+    if (need <= *cap)
+        return p;
+    while (c < need)
+        c *= 2;
+    q = realloc(p, (size_t)c * each);
+    if (!q)
+        return NULL;
+    *cap = c;
+    return q;
+}
+
+static Cmd *new_cmd(Frame *f)
+{
+    Cmd *c = grow(f->c, &f->capc, f->nc + 1, sizeof *c);
+    if (!c)
+        return NULL;
+    f->c = c;
+    return &f->c[f->nc++];
+}
+
+static void quad_verts(SDL_Vertex *v, const PlatSprite *p, float u0, float v0, float u1, float v1)
+{
+    float c = cosf(p->ang), sn = sinf(p->ang), hx = p->w / 2, hy = p->h / 2;
+    SDL_Color col;
+    col.r = (Uint8)(p->rgba >> 24); col.g = (Uint8)(p->rgba >> 16);
+    col.b = (Uint8)(p->rgba >> 8); col.a = (Uint8)p->rgba;
+    v[0].position.x = p->cx - hx * c + hy * sn; v[0].position.y = p->cy - hx * sn - hy * c;
+    v[1].position.x = p->cx + hx * c + hy * sn; v[1].position.y = p->cy + hx * sn - hy * c;
+    v[2].position.x = p->cx + hx * c - hy * sn; v[2].position.y = p->cy + hx * sn + hy * c;
+    v[3].position.x = p->cx - hx * c - hy * sn; v[3].position.y = p->cy - hx * sn + hy * c;
+    v[0].tex_coord.x = u0; v[0].tex_coord.y = v0;
+    v[1].tex_coord.x = u1; v[1].tex_coord.y = v0;
+    v[2].tex_coord.x = u1; v[2].tex_coord.y = v1;
+    v[3].tex_coord.x = u0; v[3].tex_coord.y = v1;
+    v[0].color = v[1].color = v[2].color = v[3].color = col;
+}
+
+static void draw_geometry(PlatTex *t, int blend, const SDL_Vertex *v, int quads)
+{
+    int k, m;
+    SDL_SetTextureBlendMode(t->t, blend == 1 ? SDL_BLENDMODE_ADD : SDL_BLENDMODE_BLEND);
+    for (k = 0; k < quads; k += BATCH) {
+        m = quads - k < BATCH ? quads - k : BATCH;
+        SDL_RenderGeometry(ren, t->t, v + k * 4, m * 4, idx, m * 6);
+    }
+}
+
+static void draw_fill(const SDL_FRect *rc, Uint32 rgba)
+{
+    SDL_SetRenderDrawColor(ren, (Uint8)(rgba >> 24), (Uint8)(rgba >> 16), (Uint8)(rgba >> 8), (Uint8)rgba);
+    SDL_RenderFillRectF(ren, rc);
+}
+
+static void clear_screen(void)
 {
     SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
     SDL_RenderClear(ren);
 }
 
+void plat_begin(void)
+{
+    if (threaded) {
+        frames[f_write].nv = frames[f_write].nc = 0;
+        return;
+    }
+    clear_screen();
+}
+
 void plat_end(void)
 {
-    SDL_RenderPresent(ren);
+    if (!threaded) {
+        SDL_RenderPresent(ren);
+        return;
+    }
+    SDL_LockMutex(f_lock);
+    while (f_ready >= 0)             /* the last one has not been taken yet */
+        SDL_CondWait(f_cond, f_lock);
+    f_ready = f_write;
+    f_write = 3 - f_ready - f_show;  /* the buffer neither waiting nor on screen */
+    SDL_CondBroadcast(f_cond);
+    SDL_UnlockMutex(f_lock);
 }
 
 void plat_sprites(PlatTex *t, int sx, int sy, int sw, int sh, const PlatSprite *s, int n, int blend)
@@ -473,26 +632,26 @@ void plat_sprites(PlatTex *t, int sx, int sy, int sw, int sh, const PlatSprite *
         return;
     u0 = (float)sx / t->w; u1 = (float)(sx + sw) / t->w;
     v0 = (float)sy / t->h; v1 = (float)(sy + sh) / t->h;
+    if (threaded) {                  /* record: the vertices are made here, on the game's core */
+        Frame *f = &frames[f_write];
+        SDL_Vertex *nv = grow(f->v, &f->capv, f->nv + n * 4, sizeof *nv);
+        Cmd *c;
+        if (!nv)
+            return;
+        f->v = nv;
+        if (!(c = new_cmd(f)))
+            return;
+        c->fill = 0; c->t = t; c->blend = blend; c->v0 = f->nv; c->quads = n;
+        for (i = 0; i < n; i++)
+            quad_verts(&f->v[f->nv + i * 4], &s[i], u0, v0, u1, v1);
+        f->nv += n * 4;
+        return;
+    }
     SDL_SetTextureBlendMode(t->t, blend == 1 ? SDL_BLENDMODE_ADD : SDL_BLENDMODE_BLEND);
     for (k = 0; k < n; k += BATCH) {
         m = n - k < BATCH ? n - k : BATCH;
-        for (i = 0; i < m; i++) {
-            const PlatSprite *p = &s[k + i];
-            float c = cosf(p->ang), sn = sinf(p->ang), hx = p->w / 2, hy = p->h / 2;
-            SDL_Color col;
-            SDL_Vertex *v = &verts[i * 4];
-            col.r = (Uint8)(p->rgba >> 24); col.g = (Uint8)(p->rgba >> 16);
-            col.b = (Uint8)(p->rgba >> 8); col.a = (Uint8)p->rgba;
-            v[0].position.x = p->cx - hx * c + hy * sn; v[0].position.y = p->cy - hx * sn - hy * c;
-            v[1].position.x = p->cx + hx * c + hy * sn; v[1].position.y = p->cy + hx * sn - hy * c;
-            v[2].position.x = p->cx + hx * c - hy * sn; v[2].position.y = p->cy + hx * sn + hy * c;
-            v[3].position.x = p->cx - hx * c - hy * sn; v[3].position.y = p->cy - hx * sn + hy * c;
-            v[0].tex_coord.x = u0; v[0].tex_coord.y = v0;
-            v[1].tex_coord.x = u1; v[1].tex_coord.y = v0;
-            v[2].tex_coord.x = u1; v[2].tex_coord.y = v1;
-            v[3].tex_coord.x = u0; v[3].tex_coord.y = v1;
-            v[0].color = v[1].color = v[2].color = v[3].color = col;
-        }
+        for (i = 0; i < m; i++)
+            quad_verts(&verts[i * 4], &s[k + i], u0, v0, u1, v1);
         SDL_RenderGeometry(ren, t->t, verts, m * 4, idx, m * 6);
     }
 }
@@ -501,6 +660,146 @@ void plat_fill(float x, float y, float w, float h, unsigned rgba)
 {
     SDL_FRect rc;
     rc.x = x; rc.y = y; rc.w = w; rc.h = h;
-    SDL_SetRenderDrawColor(ren, (Uint8)(rgba >> 24), (Uint8)(rgba >> 16), (Uint8)(rgba >> 8), (Uint8)rgba);
-    SDL_RenderFillRectF(ren, &rc);
+    if (threaded) {
+        Cmd *c = new_cmd(&frames[f_write]);
+        if (c) { c->fill = 1; c->rc = rc; c->rgba = rgba; }
+        return;
+    }
+    draw_fill(&rc, rgba);
+}
+
+static void draw_frame(const Frame *f)
+{
+    int i;
+    clear_screen();
+    for (i = 0; i < f->nc; i++) {
+        const Cmd *c = &f->c[i];
+        if (c->fill)
+            draw_fill(&c->rc, c->rgba);
+        else
+            draw_geometry(c->t, c->blend, f->v + c->v0, c->quads);
+    }
+    SDL_RenderPresent(ren);          /* waits for the display */
+}
+
+typedef struct { int (*frame)(double, const PlatInput *); } GameArgs;
+
+static int game_main(void *ud)
+{
+    GameArgs *g = ud;
+    PlatInput in;
+    double last = plat_time();
+    pin_to_core(1);
+    for (;;) {
+        double now;
+        SDL_LockMutex(f_lock);
+        in = shared_in;
+        shared_in.pressed = 0;       /* each press is seen once */
+        shared_in.quit = 0;
+        SDL_UnlockMutex(f_lock);
+        now = plat_time();
+        if (!g->frame(now - last, &in))
+            break;
+        last = now;
+    }
+    SDL_LockMutex(f_lock);
+    game_over_flag = 1;
+    SDL_CondBroadcast(f_cond);
+    SDL_UnlockMutex(f_lock);
+    return 0;
+}
+
+static void merge_input(const PlatInput *in)
+{
+    int pressed = shared_in.pressed, quit = shared_in.quit;
+    shared_in = *in;
+    shared_in.pressed |= pressed;    /* not yet seen by the game: keep */
+    shared_in.quit |= quit;
+}
+
+void plat_run(int (*frame)(double dt, const PlatInput *in))
+{
+    const char *env = getenv("GW_THREADS");
+    GameArgs args;
+    SDL_Thread *game = NULL;
+    PlatInput in;
+    int i;
+
+    args.frame = frame;
+    if (!(env && env[0] == '0')) {
+        f_lock = SDL_CreateMutex();
+        f_cond = SDL_CreateCond();
+        job_go = SDL_CreateSemaphore(0);
+        job_done = SDL_CreateSemaphore(0);
+        if (f_lock && f_cond && job_go && job_done) {
+            helper = SDL_CreateThread(helper_main, "gw_helper", NULL);
+            threaded = 1;
+            memset(&shared_in, 0, sizeof shared_in);
+            plat_poll(&shared_in);
+            game = SDL_CreateThread(game_main, "gw_game", &args);
+            if (!game)
+                threaded = 0;
+        }
+    }
+
+    if (!game) {                     /* one thread for everything */
+        double last = plat_time();
+        fprintf(stderr, "running on one thread\n");
+        for (;;) {
+            double now = plat_time();
+            plat_poll(&in);
+            if (!frame(now - last, &in))
+                break;
+            last = now;
+        }
+    } else {
+        const char *lim = getenv("GW_RUN_FRAMES");   /* testing: stop after this many frames, */
+        long frames_left = lim ? atol(lim) : -1, shown = 0;   /* pressing X at frame 30 */
+        pin_to_core(0);
+        for (;;) {
+            int got = -1, done;
+            if (frames_left >= 0 && (shown == 30 || shown == 32)) {
+                SDL_Event ev;
+                SDL_zero(ev);
+                ev.type = shown == 30 ? SDL_KEYDOWN : SDL_KEYUP;
+                ev.key.keysym.sym = SDLK_RETURN;
+                SDL_PushEvent(&ev);
+            }
+            plat_poll(&in);
+            if (frames_left >= 0 && shown >= frames_left)
+                in.quit = 1;
+            SDL_LockMutex(f_lock);
+            merge_input(&in);
+            while (f_ready < 0 && !game_over_flag)
+                if (SDL_CondWaitTimeout(f_cond, f_lock, 20) == SDL_MUTEX_TIMEDOUT)
+                    break;           /* keep reading the controls meanwhile */
+            if (f_ready >= 0) {
+                got = f_show = f_ready;
+                f_ready = -1;
+                SDL_CondBroadcast(f_cond);
+            }
+            done = game_over_flag;
+            SDL_UnlockMutex(f_lock);
+            if (done)
+                break;
+            if (got >= 0) {
+                draw_frame(&frames[got]);
+                shown++;
+            }
+        }
+        SDL_WaitThread(game, NULL);
+        threaded = 0;
+    }
+
+    if (helper) {
+        helper_quit = 1;
+        SDL_SemPost(job_go);
+        SDL_WaitThread(helper, NULL);
+        helper = NULL;
+    }
+    for (i = 0; i < 3; i++) {
+        free(frames[i].v);
+        free(frames[i].c);
+        memset(&frames[i], 0, sizeof frames[i]);
+    }
 }

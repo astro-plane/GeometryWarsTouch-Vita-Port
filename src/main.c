@@ -8,8 +8,6 @@ int _newlib_heap_size_user = 64 * 1024 * 1024;
 int main(int argc, char **argv)
 {
     int w, h;
-    double last;
-    PlatInput in;
     (void)argc; (void)argv;
 
     if (plat_init(&w, &h) != 0)
@@ -18,14 +16,7 @@ int main(int argc, char **argv)
         plat_shutdown();
         return 1;
     }
-    last = plat_time();
-    for (;;) {
-        double now = plat_time();
-        plat_poll(&in);
-        if (!game_frame(now - last, &in))
-            break;
-        last = now;
-    }
+    plat_run(game_frame);                /* the game on one core, drawing on another */
     game_shutdown();
     plat_shutdown();
     return 0;
