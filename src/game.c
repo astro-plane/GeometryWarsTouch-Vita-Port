@@ -48,8 +48,9 @@ static float clampf(float v, float a, float b) { return v < a ? a : v > b ? b : 
 
 /* The atlas: a soft horizontal line (with soft ends), a soft dot, and a
  * solid patch.  Everything is drawn from these three. */
-enum { K_LINE, K_DOT, K_SOLID };
-static const int ksrc[3][4] = { { 0, 0, 64, 32 }, { 64, 0, 32, 32 }, { 106, 10, 12, 12 } };   /* well inside the solid patch */
+enum { K_LINE, K_DOT, K_SOLID, K_GLINE };
+static const int ksrc[4][4] = { { 0, 0, 64, 32 }, { 64, 0, 32, 32 }, { 106, 10, 12, 12 },
+                                { 0, 32, 64, 32 } };   /* K_GLINE: a grid line, glow and core in one */   /* well inside the solid patch */
 
 /* A frame is drawn in two lists that are built at the same time on two
  * cores: the grid (by a helper, see grid_job) and everything else. Both are
@@ -335,7 +336,7 @@ static void grid_update(float dt)
 /* The grid's lines, built by grid_job on a helper core, which also turns them
  * into GPU quads (plat_batch_lines) there.  The job touches nothing but the
  * grid, the particles (read only), the camera and these lists. */
-#define MAX_GLINES (2 * (GX * GY * 2))
+#define MAX_GLINES (GX * GY * 2)
 static PlatLine glines[MAX_GLINES];
 static int n_glines;
 static PlatBatch *grid_batch, *part_batch;
@@ -355,8 +356,15 @@ static void grid_seg(int i0, int j0, int i1, int j1, int major)
     float hot = clampf(d / 10, 0, 1);        /* stretched lines glow brighter */
     float k = scr_h / 544.0f;
     unsigned c = hot > 0.02f ? 0x5aa0ffffu : 0x2a5cd8ffu;
-    gsline(x0, y0, x1, y1, 5 * k, with_alpha(c, (major ? 0.07f : 0.03f) + hot * 0.16f));
-    gsline(x0, y0, x1, y1, 1.4f * k, with_alpha(c, (major ? 0.30f : 0.14f) + hot * 0.55f));
+    {   /* one wide quad; pulled in at both ends so its bright core stops where the
+         * old thin pass did (else the cores overlap and bead at every joint) */
+        float ex = x1 - x0, ey = y1 - y0, l = sqrtf(ex * ex + ey * ey), pull = 1.1f * k;
+        if (l > 2 * pull) {
+            ex = ex / l * pull; ey = ey / l * pull;
+            x0 += ex; y0 += ey; x1 -= ex; y1 -= ey;
+        }
+        gsline(x0, y0, x1, y1, 5 * k, with_alpha(c, fminf(((major ? 0.30f : 0.14f) + hot * 0.55f) * 1.23f, 1)));
+    }
 }
 
 static void grid_draw(void)
@@ -383,7 +391,7 @@ static void grid_job(void *arg)
     (void)arg;
     if (grid_dt > 0) grid_update(grid_dt);
     grid_draw();
-    plat_batch_lines(grid_batch, atlas, ksrc[K_LINE][0], ksrc[K_LINE][1], ksrc[K_LINE][2], ksrc[K_LINE][3],
+    plat_batch_lines(grid_batch, atlas, ksrc[K_GLINE][0], ksrc[K_GLINE][1], ksrc[K_GLINE][2], ksrc[K_GLINE][3],
                      glines, n_glines);
     parts_lines();
 }
@@ -3173,18 +3181,25 @@ static void start_game(void)                 /* the mode's Gr* function, ResetGa
 
 int game_init(int screen_w, int screen_h)
 {
-    unsigned char *px8 = calloc(128 * 32 * 4, 1);
+    unsigned char *px8 = calloc(128 * 64 * 4, 1);
     int x, y;
     FILE *f;
     if (!px8) return -1;
     scr_w = screen_w;
     scr_h = screen_h;
     zoom = fminf(scr_h / (2 * AH + 34), scr_w / (2 * AW + 34));   /* the whole arena on screen */
-    for (y = 0; y < 32; y++)
+    for (y = 0; y < 64; y++)
         for (x = 0; x < 128; x++) {
             unsigned char *p = &px8[(y * 128 + x) * 4];
             float a = 0;
-            if (x < 64) {                    /* soft line */
+            if (y >= 32) {                   /* grid line: the wide glow and the thin core of the two
+                                              * passes the grid used to draw, in one (core 1.4/5 as wide,
+                                              * glow at 0.23 of its strength): half the quads */
+                float dy = y - 32 + 0.5f - 16, ends = clampf(fminf(x + 0.5f, 64 - x - 0.5f) / 10, 0, 1);
+                if (x < 64)
+                    a = (0.23f * expf(-(dy * dy) / (6.5f * 6.5f)) +
+                         expf(-(dy * dy) / (1.82f * 1.82f))) / 1.23f * ends;
+            } else if (x < 64) {             /* soft line */
                 float dy = y + 0.5f - 16, ends = clampf(fminf(x + 0.5f, 64 - x - 0.5f) / 10, 0, 1);
                 a = expf(-(dy * dy) / (6.5f * 6.5f)) * ends;
             } else if (x < 96) {             /* soft dot */
@@ -3199,7 +3214,7 @@ int game_init(int screen_w, int screen_h)
             p[0] = p[1] = p[2] = 255;
             p[3] = (unsigned char)(a * 255 + 0.5f);
         }
-    atlas = plat_tex_create(px8, 128, 32);
+    atlas = plat_tex_create(px8, 128, 64);
     grid_batch = plat_batch_new(MAX_GLINES);
     part_batch = plat_batch_new(MAX_PART);
     free(px8);
