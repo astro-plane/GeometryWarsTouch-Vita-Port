@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <dirent.h>
 #include <math.h>
 #include "plat.h"
 #ifdef __vita__
@@ -37,6 +38,18 @@ static Sound sounds[MAX_SOUNDS];
 static int n_sounds;
 static Voice voices[MAX_VOICES];
 
+/* The effects are all loaded up front by a loader thread (sound_loader), so the
+ * game never reads the memory card mid-play: a sound becomes playable once
+ * n_ready counts past it.  Requests reach the audio callback through a small
+ * ring (the game's thread writes, the callback reads), so plat_sfx never waits
+ * for the audio lock either; the callback holds that lock while it decodes music. */
+static SDL_atomic_t n_ready;
+static SDL_Thread *loader;
+static volatile int loader_quit;
+#define REQ_N 64
+static const Sound *req[REQ_N];
+static SDL_atomic_t req_head, req_tail;
+
 /* music state, shared with the audio callback (guarded by SDL_LockAudioDevice) */
 static OggVorbis_File vf;
 static int music_open, music_paused, music_eof, music_channels = 2;
@@ -57,6 +70,22 @@ static void mix_cb(void *ud, Uint8 *stream, int len)
     int frames = len / 4, done = 0, v, i;
     (void)ud;
     memset(stream, 0, (size_t)len);
+
+    while (SDL_AtomicGet(&req_tail) != SDL_AtomicGet(&req_head)) {   /* new sounds to start */
+        int t = SDL_AtomicGet(&req_tail), pick = -1;
+        Uint32 oldest = 0;
+        const Sound *snd;
+        SDL_MemoryBarrierAcquire();
+        snd = req[t % REQ_N];
+        SDL_AtomicSet(&req_tail, t + 1);
+        for (v = 0; v < MAX_VOICES; v++)
+            if (!voices[v].s) { pick = v; break; }
+        if (pick < 0)                        /* all busy: replace the one furthest along */
+            for (v = 0; v < MAX_VOICES; v++)
+                if (voices[v].pos >= oldest) { oldest = voices[v].pos; pick = v; }
+        voices[pick].s = snd;
+        voices[pick].pos = 0;
+    }
 
     if (music_open && !music_paused && !music_eof) {
         while (done < frames) {
@@ -151,65 +180,88 @@ int plat_music_done(void)
     return d;
 }
 
-static Sound *sound_get(const char *name)
+/* load sfx/<name>.wav into s (on the loader thread) */
+static int load_sound(Sound *s, const char *name)
 {
     char path[640];
     SDL_AudioSpec spec;
     SDL_AudioCVT cvt;
     Uint8 *buf = NULL;
     Uint32 len = 0;
-    Sound *s;
-    int i;
-    for (i = 0; i < n_sounds; i++)
-        if (!strcmp(sounds[i].name, name))
-            return sounds[i].failed ? NULL : &sounds[i];
-    if (n_sounds == MAX_SOUNDS)
-        return NULL;
-    s = &sounds[n_sounds++];
     SDL_snprintf(s->name, sizeof s->name, "%s", name);
     s->failed = 1;
     SDL_snprintf(path, sizeof path, "%ssfx/%s.wav", data_dir, name);
     if (!SDL_LoadWAV(path, &spec, &buf, &len))
-        return NULL;
+        return -1;
     /* the game's effects are 24 kHz mono: one conversion to the mixer's format */
     if (SDL_BuildAudioCVT(&cvt, spec.format, spec.channels, spec.freq, AUDIO_S16SYS, 1, MIX_FREQ) < 0) {
         SDL_FreeWAV(buf);
-        return NULL;
+        return -1;
     }
     cvt.len = (int)len;
     cvt.buf = SDL_malloc((size_t)len * (size_t)cvt.len_mult + 16);
     if (!cvt.buf) {
         SDL_FreeWAV(buf);
-        return NULL;
+        return -1;
     }
     memcpy(cvt.buf, buf, len);
     SDL_FreeWAV(buf);
     if (cvt.needed && SDL_ConvertAudio(&cvt) < 0) {
         SDL_free(cvt.buf);
-        return NULL;
+        return -1;
     }
     s->pcm = (Sint16 *)cvt.buf;
     s->frames = (Uint32)(cvt.needed ? cvt.len_cvt : (int)len) / 2;
     s->failed = 0;
-    return s;
+    return 0;
+}
+
+/* every sfx/<name>.wav, one after another, published as each is ready */
+static int sound_loader(void *ud)
+{
+    char dir[600];
+    DIR *d;
+    struct dirent *e;
+    (void)ud;
+    SDL_snprintf(dir, sizeof dir, "%ssfx", data_dir);
+    d = opendir(dir);
+    if (!d)
+        return 0;
+    while (!loader_quit && n_sounds < MAX_SOUNDS && (e = readdir(d)) != NULL) {
+        char name[48];
+        size_t n = strlen(e->d_name);
+        if (n < 5 || n - 4 >= sizeof name || SDL_strcasecmp(e->d_name + n - 4, ".wav") != 0)
+            continue;
+        memcpy(name, e->d_name, n - 4);
+        name[n - 4] = 0;
+        if (load_sound(&sounds[n_sounds], name) == 0) {
+            n_sounds++;
+            SDL_MemoryBarrierRelease();
+            SDL_AtomicSet(&n_ready, n_sounds);
+        }
+    }
+    closedir(d);
+    return 0;
 }
 
 void plat_sfx(const char *name)
 {
-    Sound *s;
-    int v, pick = -1;
-    Uint32 oldest = 0;
-    if (!audio || !name || !(s = sound_get(name)))
+    int i, ready, h;
+    const Sound *s = NULL;
+    if (!audio || !name)
         return;
-    SDL_LockAudioDevice(audio);
-    for (v = 0; v < MAX_VOICES; v++)
-        if (!voices[v].s) { pick = v; break; }
-    if (pick < 0)                            /* all busy: replace the one furthest along */
-        for (v = 0; v < MAX_VOICES; v++)
-            if (voices[v].pos >= oldest) { oldest = voices[v].pos; pick = v; }
-    voices[pick].s = s;
-    voices[pick].pos = 0;
-    SDL_UnlockAudioDevice(audio);
+    ready = SDL_AtomicGet(&n_ready);
+    SDL_MemoryBarrierAcquire();
+    for (i = 0; i < ready; i++)
+        if (!strcmp(sounds[i].name, name)) { s = &sounds[i]; break; }
+    if (!s)                                  /* not loaded (yet): never read the card here */
+        return;
+    h = SDL_AtomicGet(&req_head);
+    if (h - SDL_AtomicGet(&req_tail) >= REQ_N)
+        return;                              /* the ring is full: drop it */
+    req[h % REQ_N] = s;
+    SDL_MemoryBarrierRelease();
+    SDL_AtomicSet(&req_head, h + 1);
 }
 
 /* -------------------------------------------------------------- video -- */
@@ -293,16 +345,20 @@ int plat_init(int *screen_w, int *screen_h)
     want.samples = 1024;
     want.callback = mix_cb;
     audio = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
-    if (audio)
+    if (audio) {
         SDL_PauseAudioDevice(audio, 0);
-    else
+        loader = SDL_CreateThread(sound_loader, "gw_sfx_loader", NULL);   /* all effects, off this thread */
+    } else {
         fprintf(stderr, "no audio device (%s): playing silent\n", SDL_GetError());
+    }
     return 0;
 }
 
 void plat_shutdown(void)
 {
     int i;
+    loader_quit = 1;
+    if (loader) { SDL_WaitThread(loader, NULL); loader = NULL; }
     plat_music_stop();
     if (audio)
         SDL_CloseAudioDevice(audio);
