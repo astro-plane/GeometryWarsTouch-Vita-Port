@@ -1,6 +1,8 @@
 /* plat_sdl.c - SDL2 implementation of plat.h for the PS Vita (VitaSDK's SDL2
- * port) and for desktop builds.  Music is streamed from Ogg Vorbis with
- * libvorbisfile inside the audio callback; sound effects are WAV files.
+ * port) and for desktop builds.  On the Vita the music is the game's own AAC,
+ * decoded by the hardware decoder (vita_aac.c); elsewhere, or if that fails,
+ * it is streamed from Ogg Vorbis with libvorbisfile inside the audio callback.
+ * Sound effects are WAV files.
  * Sprites are drawn in batches with SDL_RenderGeometry: the game draws
  * thousands of glowing line segments a frame. */
 #include <SDL.h>
@@ -11,6 +13,9 @@
 #include <sys/stat.h>
 #include <math.h>
 #include "plat.h"
+#ifdef __vita__
+#include "vita_aac.h"                /* the original AAC music on the hardware decoder */
+#endif
 
 #define SCREEN_W 960
 #define SCREEN_H 544
@@ -37,6 +42,7 @@ static Voice voices[MAX_VOICES];
 /* music state, shared with the audio callback (guarded by SDL_LockAudioDevice) */
 static OggVorbis_File vf;
 static int music_open, music_paused, music_eof, music_channels = 2;
+static int music_hw;                 /* 1: playing the AAC through sceAudiodec (Vita) */
 static Sint16 dec_buf[4096 * 2];
 
 typedef struct { SDL_FingerID id; float x, y; int on; } Finger;
@@ -55,6 +61,19 @@ static void mix_cb(void *ud, Uint8 *stream, int len)
     (void)ud;
     memset(stream, 0, (size_t)len);
 
+#ifdef __vita__
+    if (music_open && music_hw && !music_paused && !music_eof) {
+        while (done < frames && !music_eof) {   /* mono from the hardware decoder */
+            int want = frames - done, got;
+            if (want > 4096) want = 4096;
+            got = aac_read(dec_buf, want, MIX_FREQ);
+            for (i = 0; i < got; i++)
+                out[(done + i) * 2] = out[(done + i) * 2 + 1] = (Sint16)(dec_buf[i] * 3 / 4);
+            done += got;
+            if (got < want) music_eof = 1;
+        }
+    } else
+#endif
     if (music_open && !music_paused && !music_eof) {
         while (done < frames) {
             int want = frames - done, bs, got;
@@ -98,6 +117,33 @@ int plat_music_play(const char *path)
     plat_music_stop();
     if (!audio)
         return -1;
+#ifdef __vita__
+    {                                /* prefer the game's own AAC (music/<name>.aac) */
+        char aac[600];
+        size_t n = strlen(path);
+        FILE *log;
+        int ok = -1;
+        struct stat st;
+        mkdir("ux0:data/gwvita", 0777);
+        /* an empty file ux0:data/gwvita/no_hw_audio turns the hardware decoder off */
+        if (stat("ux0:data/gwvita/no_hw_audio", &st) == 0) n = 0;
+        if (n > 4 && n < sizeof aac && !strcmp(path + n - 4, ".ogg")) {
+            memcpy(aac, path, n - 4);
+            strcpy(aac + n - 4, ".aac");
+            log = fopen("ux0:data/gwvita/audio_log.txt", "a");   /* written first, in case it crashes */
+            if (log) { fprintf(log, "trying hardware AAC: %s\n", aac); fclose(log); }
+            ok = aac_open(aac);      /* music is stopped, so the callback is not using it */
+            if (ok == 0) {
+                SDL_LockAudioDevice(audio);
+                music_hw = 1; music_eof = 0; music_paused = 0; music_open = 1;
+                SDL_UnlockAudioDevice(audio);
+            }
+        }
+        log = fopen("ux0:data/gwvita/audio_log.txt", "a");   /* what happened */
+        if (log) { fprintf(log, "%s\n", n ? aac_status() : "music: hardware decoder off (no_hw_audio)"); fclose(log); }
+        if (ok == 0) return 0;
+    }
+#endif
     if (ov_fopen(path, &nv) != 0) {
         fprintf(stderr, "cannot open %s\n", path);
         return -1;
@@ -124,6 +170,10 @@ void plat_music_stop(void)
         return;
     SDL_LockAudioDevice(audio);
     music_open = 0;
+#ifdef __vita__
+    if (music_hw) { aac_close(); music_hw = 0; }
+    else
+#endif
     ov_clear(&vf);
     SDL_UnlockAudioDevice(audio);
 }

@@ -130,6 +130,17 @@ GW_DATA=app_data ./build-pc/gwvita
 | START | P | pause; then ○ quits to the title |
 | ✕ | Enter | start / continue |
 
+
+## Music on the Vita's hardware decoder
+
+On the Vita the music is the game's own AAC (`app_data/music/*.aac`, copied
+unchanged from the IPA), decoded by `sceAudiodec`. That runs on the Vita's
+multimedia processor rather than the ARM cores (`src/vita_aac.c`). If the
+decoder can't be started, the game falls back to the Ogg Vorbis copies, which
+the CPU decodes. Each track change writes a line to
+`ux0:data/gwvita/audio_log.txt` saying which path it took. To force the CPU
+path, create an empty file `ux0:data/gwvita/no_hw_audio`.
+
 ## Testing
 
 ```sh
