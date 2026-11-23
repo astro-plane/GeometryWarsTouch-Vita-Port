@@ -14,7 +14,7 @@ struct PlatTex { unsigned char *px; int w, h; };
 static unsigned char fb[W * H * 4];
 int soft_render = 0, soft_live_tex = 0;
 double soft_time = 0;
-char soft_log[8192];
+char soft_log[8192];                 /* the most recent sounds (oldest dropped when full) */
 
 int plat_init(int *w, int *h) { *w = W; *h = H; return 0; }
 void plat_shutdown(void) {}
@@ -103,7 +103,14 @@ void plat_fill(float x, float y, float w, float h, unsigned rgba)
 
 void plat_sfx(const char *name)
 {
-    if (strlen(soft_log) + strlen(name) + 2 < sizeof soft_log) { strcat(soft_log, name); strcat(soft_log, " "); }
+    {
+        size_t need = strlen(name) + 2, have = strlen(soft_log);
+        if (have + need >= sizeof soft_log) {   /* drop the older half */
+            size_t cut = have / 2;
+            memmove(soft_log, soft_log + cut, have - cut + 1);
+        }
+        strcat(soft_log, name); strcat(soft_log, " ");
+    }
 }
 
 int soft_music_on;

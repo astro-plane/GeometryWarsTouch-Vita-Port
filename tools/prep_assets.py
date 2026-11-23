@@ -9,6 +9,7 @@ sound is used; everything you see is drawn by this project's own code.
   app_data/sfx/<name>.wav     sound effects (the .caf files are plain PCM:
                               unpacked with Python alone)
   app_data/music/<name>.ogg   music (AAC in the app: needs ffmpeg)
+  app_data/levels.txt         the Sequence level scripts, decoded from Data.bin
   app_data/manifest.txt       what was made; the game looks for this file
 
 Files already made are kept, so an interrupted run can be restarted.
@@ -66,6 +67,36 @@ def music_name(fn):
     return base.strip().lower().replace(' ', '_')
 
 
+def flask_decode(b):
+    """XtFlaskDecodeStrings (0x00088f50 in the game): a running key."""
+    k, out = 0xcc, bytearray()
+    for i, x in enumerate(b):
+        o = (k - (x ^ 0xb3)) & 0xff
+        if o == 0:
+            break
+        out.append(o)
+        k = (k + o - i) & 0xff
+    return bytes(out)
+
+
+def level_scripts(data):
+    """The Sequence level scripts (DbLevelScript records) out of Data.bin: each is an
+    encoded string with the level number 8 bytes before it."""
+    found = {}
+    keys = (b'circle ', b'line ', b'scatter ', b'clump ', b'wait ')
+    for i in range(16, len(data) - 8):
+        head = flask_decode(data[i:i + 10])
+        if not head.startswith(keys):
+            continue
+        level = struct.unpack_from('<I', data, i - 8)[0]
+        if level >= 32 or (level + 1) in found:
+            continue
+        text = flask_decode(data[i:i + 8192]).decode('latin-1')
+        if '(' in text[:24]:
+            found[level + 1] = text
+    return found
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('ipa', help='GWarsTouch_v1.2.0_os30.ipa (your own copy)')
@@ -108,6 +139,14 @@ def main():
             f.write(wav)
         made += 1
     print('%d sound effects (%d new, %d already there, %d skipped)' % (made + skipped, made, skipped, bad))
+
+    # ---- Sequence levels ----
+    if APP + 'Data.bin' in names:
+        levels = level_scripts(z.read(APP + 'Data.bin'))
+        with open(os.path.join(a.out, 'levels.txt'), 'w') as f:
+            for n in sorted(levels):
+                f.write('level %d\n%s\n' % (n, levels[n].replace('\r', '')))
+        print('%d Sequence level scripts' % len(levels))
 
     # ---- music ----
     aacs = sorted(n for n in names if n.startswith(APP) and n.endswith('.aac') and n.count('/') == 2)

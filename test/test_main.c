@@ -15,6 +15,7 @@ void soft_dump(const char *path);
 static PlatInput in;
 static int prev_held, failures;
 static const char *out_dir;
+static int have_levels;
 
 static void frame(void)
 {
@@ -74,6 +75,14 @@ static void play_auto(double secs)
     in.lx = in.ly = in.rx = in.ry = 0;
 }
 
+static void to_title(void)
+{
+    in.lx = in.ly = in.rx = in.ry = 0;
+    if (field("scene=") == 1) { press(BTN_START); press(BTN_CIRCLE); }
+    if (field("scene=") == 2) { run(1.7); press(BTN_CROSS); }
+    run(0.4);
+}
+
 int main(int argc, char **argv)
 {
     int have_data;
@@ -87,6 +96,14 @@ int main(int argc, char **argv)
         if (game_init(w, h) != 0) { printf("game_init failed\n"); return 1; }
     }
     have_data = soft_music_on;
+    {
+        char lp[600];
+        FILE *lf;
+        snprintf(lp, sizeof lp, "%slevels.txt", getenv("GW_DATA") ? getenv("GW_DATA") : "");
+        lf = fopen(lp, "r");
+        have_levels = lf != NULL;
+        if (lf) fclose(lf);
+    }
     printf("app_data %s\n", have_data ? "found: sound checks on" : "missing: sound checks skipped");
 
     run(1); snap("01_title"); say("title");
@@ -98,6 +115,19 @@ int main(int argc, char **argv)
     check("X starts a game", field("scene=") == 1 && field("lives=") == 3 && field("bombs=") == 3);
     if (have_data) check("start sound", strstr(soft_log, "Game_start") != NULL);
 
+    /* pause stops the clock; O quits to the title */
+    {
+        long t0;
+        play_auto(1);
+        press(BTN_START);
+        t0 = field("playt=");
+        run(2);
+        check("pause holds the game", field("paused=") == 1 && field("playt=") == t0);
+        snap("05_paused");
+        press(BTN_START); run(0.2);
+        check("START resumes", field("paused=") == 0);
+    }
+
     play_auto(8); snap("02_early"); say("8 s");
     check("enemies appear", field("enemies=") > 0 || field("kills=") > 0);
     check("the gun fires", strstr(soft_log, "Fire_normal") != NULL || !have_data);
@@ -107,32 +137,19 @@ int main(int argc, char **argv)
     check("geoms raise the multiplier", field("mult=") > 1 || field("lives=") < 3);
     if (have_data) check("explosion sound", strstr(soft_log, "Enemy_explode") != NULL);
 
-    /* a bomb sweeps the field and costs a bomb, but scores nothing */
+    /* a bomb: an expanding ring (radius 400, 0.75 s) that kills but scores nothing */
     {
-        long b0, s0;
+        long b0, s0, e0;
         play_auto(2);
-        b0 = field("bombs="); s0 = field("score=");
+        b0 = field("bombs="); s0 = field("score="); e0 = field("enemies=");
         if (field("alive=") == 1 && b0 > 0) {
-            press(BTN_L); run(0.05);
+            press(BTN_L); run(0.8);
             say("bomb");
-            check("bomb clears the field", field("enemies=") == 0);
+            check("bomb kills enemies", field("enemies=") < e0 || e0 == 0);
             check("bomb used", field("bombs=") == b0 - 1);
             check("bomb scores nothing", field("score=") == s0);
             snap("04_bomb");
         }
-    }
-
-    /* pause stops the clock; O quits to the title */
-    {
-        long t0;
-        play_auto(3);
-        press(BTN_START);
-        t0 = field("playt=");
-        run(2);
-        check("pause holds the game", field("paused=") == 1 && field("playt=") == t0);
-        snap("05_paused");
-        press(BTN_START); run(0.2);
-        check("START resumes", field("paused=") == 0);
     }
 
     /* the gravity wells and the rest arrive later on */
@@ -146,7 +163,7 @@ int main(int argc, char **argv)
         for (i = 0; i < 60 * 600 && field("scene=") == 1; i++) frame();
         say("game over");
         check("the game ends when the ships run out", field("scene=") == 2);
-        if (have_data) check("death sound", strstr(soft_log, "Player_explode") != NULL);
+        if (have_data) check("death sound", strstr(soft_log, "Ship_explode") != NULL);
         run(2); snap("07_game_over");
         check("high score kept", field("best=") > 0 && field("best=") == field("score="));
         f = fopen("/tmp/gwvita_test_save.txt", "r");
@@ -167,41 +184,155 @@ int main(int argc, char **argv)
         run(1); snap("08_title_with_best");
     }
 
-    /* a new game: the gun starts weak, wells pull the ship, campers get company */
+    /* the recovered rules, one at a time, with the spawn director held back */
     {
-        long x0, gmax = 0;
-        double t;
-        press(BTN_CROSS); run(0.3);
-        check("the gun starts at the bottom", field("gun=") == 0 && field("power=") == 0);
-        game_test_spawn(6, (float)field("px=") - 300, (float)field("py=") - 150);
-        in.lx = 0.5f; run(1.6); in.lx = 0;
-        snap("09_snake");
-        if (have_data) check("snake spawn sound", strstr(soft_log, "Snake_spawn") != NULL);
-        press(BTN_L); run(0.1);
+        long x0, e0;
+        press(BTN_CROSS); run(0.1);
+        game_test_quiet();
+        run(1.2);                                /* ship's spawn protection runs out */
+        say("fresh game, quiet");
+
+        /* gun: 3 bullets a volley, a volley every 0.1 s (FireProjectile 0x0003b11c) */
+        in.rx = 1; run(0.5); in.rx = 0;
+        say("0.5 s of fire");
+        check("3 bullets per volley, 10 volleys a second", field("bullets=") >= 12 && field("bullets=") <= 18);
+        run(1.0);                                /* they fly off into the wall */
+        check("bullets end at the wall", field("bullets=") == 0);
+
+        /* first kill at x1: floor(1 * 0.25 * 50) rounded down to 5 = 10 points */
+        game_test_spawn(2, (float)field("px=") + 90, (float)field("py="));
+        in.rx = 1; run(0.3); in.rx = 0; run(0.2);
+        say("grunt shot");
+        check("a grunt at x1 scores 10", field("score=") == 10);
+        /* fly over the geoms it left to raise the multiplier */
+        in.lx = 1; run(0.5); in.lx = 0; run(0.6);
+        say("geoms collected");
+        check("geoms raise the multiplier", field("mult=") > 1);
+        if (have_data) check("geom pickup sound", strstr(soft_log, "Pickup_geom") != NULL);
+
+        /* a sleeping black hole does not pull; one shot wakes it */
         x0 = field("px=");
-        game_test_spawn(5, (float)x0 + 220, (float)field("py="));
-        run(0.7);
-        say("well beside the ship");
-        check("a gravity well drags the ship in", field("px=") > x0 + 30);
-        snap("10_well");
-        press(BTN_L); run(0.1);              /* clear them away */
-        for (t = 0; t < 5.5 && field("scene=") == 1; t += 1.0 / 60) frame();
-        say("sat still 5.5 s");
-        check("sitting still brings enemies down on the ship", field("camps=") >= 1);
-        /* shoot drifters one at a time and pick up what they drop */
+        game_test_spawn(5, (float)x0 + 80, (float)field("py="));
+        run(0.6);
+        say("sleeping well beside the ship");
+        check("a sleeping black hole does not pull", labs(field("px=") - x0) <= 2);
+        check("the black hole is asleep", field("active=") == 0);
+        in.rx = 1; run(0.04); in.rx = 0;   /* one volley: StartHits is 6, so more would kill it */
+        run(0.4);
+        say("awake well");
+        check("one volley wakes it", field("active=") == 1);
+        check("and it survives three hits (StartHits 6)", field("wells=") == 1);
+        check("an awake black hole drags the ship in", field("px=") > x0 + 6);
+        snap("09_well");
+        press(BTN_L); run(1.0);                  /* bomb it away (it shrinks to nothing) */
+        check("the bomb destroys the black hole", field("wells=") == 0);
+
+        /* an awake black hole eats what comes near and bursts into Protons */
+        game_test_spawn(105, -200, -100);
         {
             int k;
-            for (k = 0; k < 24 && field("scene=") == 1; k++) {
-                in.lx = (k & 1) ? -1 : 1; run(0.4); in.lx = 0;   /* keep moving: no camping */
-                game_test_spawn(2, (float)field("px=") + 110, (float)field("py="));
-                in.rx = 1; run(0.5); in.rx = 0; run(0.6);
-                if (field("gun=") > gmax) gmax = field("gun=");
-            }
+            for (k = 0; k < 14; k++) game_test_spawn(2, -200, -100);
         }
-        say("after shooting drifters");
-        printf("  highest gun level reached: %ld\n", gmax);
-        check("geoms power up the gun", gmax >= 1);
-        if (have_data && gmax >= 1) check("power-up sound", strstr(soft_log, "PowerUp_Weapon") != NULL);
+        run(0.5);
+        say("overfed well");
+        check("an overfull black hole bursts", field("wells=") == 0);
+        check("it releases a swarm of Protons", field("enemies=") >= 15);
+        snap("10_burst");
+        press(BTN_L); run(1.0);
+
+        /* a Spinner splits in three when a bullet kills it */
+        run(2.5);                                /* the bomb's cooldown and the field settle */
+        e0 = field("kills=");
+        game_test_spawn(4, (float)field("px=") + 70, (float)field("py="));
+        in.rx = 1; run(0.04); in.rx = 0; run(0.1);
+        say("spinner shot");
+        check("the spinner died", field("kills=") > e0);
+        if (have_data) check("it splits (sound)", strstr(soft_log, "SpinnerSplit") != NULL);
+
+        /* the snake's body shrugs off bullets */
+        game_test_spawn(8, 150, 120);
+        run(0.2);
+        snap("11_snake");
+        if (have_data) check("snake spawn sound", strstr(soft_log, "Snake_spawn") != NULL);
+    }
+
+    /* ---- the other modes, each from the title ---- */
+    {
+        static const char *names[10] = { "evolved", "deadline", "pacifism", "waves", "king",
+                                         "sequence", "minelayer", "titans", "whirlpool", "meteor" };
+        int m;
+        for (m = 1; m < 10; m++) {
+            char nm[64];
+            long k0;
+            to_title();
+            game_test_mode(m);
+            run(0.4);
+            press(BTN_CROSS);
+            run(0.1);
+            snprintf(nm, sizeof nm, "mode %s", names[m]);
+            say(nm);
+            if (m == 5 && !have_levels) { check("sequence needs levels.txt (skipped)", 1); continue; }
+            check("the mode starts", field("scene=") == 1 && field("mode=") == m);
+            switch (m) {
+            case 1:                              /* Deadline: endless ships, a clock, the budget grows */
+                check("deadline: no spare ships, 3 bombs", field("lives=") == 0 && field("bombs=") == 3);
+                play_auto(12);
+                say("deadline 12 s");
+                check("deadline: waves come (budget > 0)", field("budget=") > 0);
+                break;
+            case 2:                              /* Pacifism: no gun, grunts and gates */
+                play_auto(6);
+                say("pacifism 6 s");
+                check("pacifism: the gun does not fire", field("bullets=") == 0);
+                check("pacifism: grunts come", field("enemies=") > 0);
+                break;
+            case 3:                              /* Waves: walls of rockets */
+                run(2.5);
+                say("waves 2.5 s");
+                check("waves: a wall of rockets", field("rockets=") >= 10);
+                break;
+            case 4:                              /* King: three zones; firing only inside one */
+                check("king: three zones", field("hills=") == 3);
+                check("king: one life", field("lives=") == 0);
+                in.rx = 1; run(0.3); in.rx = 0;
+                check("king: firing works in the middle zone", field("bullets=") > 0 || field("kills=") > 0);
+                in.lx = 1; run(1.2); in.lx = 0; run(0.6);
+                k0 = field("bullets=");
+                in.rx = -1; run(0.3); in.rx = 0;
+                say("king outside");
+                check("king: no firing outside a zone", field("bullets=") <= k0);
+                break;
+            case 5:                              /* Sequence: level 1 starts from its script */
+                run(1.5);
+                say("sequence 1.5 s");
+                check("sequence: level 1's opening ring spawned", field("enemies=") >= 4);
+                break;
+            case 6:                              /* Minelayer: three layers, mines, no gun */
+                run(4);
+                say("minelayer 4 s");
+                check("minelayer: three minelayers laying mines", field("mines=") > 0);
+                check("minelayer: the gun does not fire", field("bullets=") == 0);
+                break;
+            case 7:                              /* Titans: big ones that break up */
+                run(1.3);
+                say("titans 1.3 s");
+                check("titans: a titan arrived", field("titans=") >= 1);
+                break;
+            case 8:                              /* Whirlpool: the black hole in the middle */
+                run(1.3);
+                say("whirlpool 1.3 s");
+                check("whirlpool: the black hole is there", field("holes=") == 1);
+                break;
+            case 9:                              /* Meteor: a shower of 32 */
+                run(1.3);
+                say("meteor 1.3 s");
+                check("meteor: a meteor shower", field("meteors=") >= 20);
+                break;
+            }
+            run(0.5);
+            snprintf(nm, sizeof nm, "20_mode_%s", names[m]);
+            snap(nm);
+        }
     }
 
     game_shutdown();
