@@ -25,7 +25,7 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
 
-add_executable(gwvita src/main.c src/game.c src/plat_sdl.c src/vita_aac.c)
+add_executable(gwvita src/main.c src/game.c src/plat_sdl.c)
 target_compile_options(gwvita PRIVATE -Wall)
 
 if(DESKTOP)
@@ -50,7 +50,6 @@ else()
     SceGxm_stub SceCommonDialog_stub SceAppMgr_stub SceAppUtil_stub SceTouch_stub
     SceHid_stub SceMotion_stub ScePower_stub SceIme_stub SceProcessmgr_stub
     SceLibKernel_stub SceKernelThreadMgr_stub     # pinning the threads to cores
-    SceAudiodec_stub                              # the hardware AAC decoder (src/vita_aac.c)
   )
 
   set(VPK_FILES

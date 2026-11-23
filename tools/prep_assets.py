@@ -8,8 +8,7 @@ sound is used; everything you see is drawn by this project's own code.
 
   app_data/sfx/<name>.wav     sound effects (the .caf files are plain PCM:
                               unpacked with Python alone)
-  app_data/music/<name>.aac   music as it is in the app (the Vita decodes it in hardware)
-  app_data/music/<name>.ogg   the same music as Ogg Vorbis for the PC build (needs ffmpeg)
+  app_data/music/<name>.ogg   music (AAC in the app: needs ffmpeg)
   app_data/levels.txt         the Sequence level scripts, decoded from Data.bin
   app_data/manifest.txt       what was made; the game looks for this file
 
@@ -152,16 +151,8 @@ def main():
     # ---- music ----
     aacs = sorted(n for n in names if n.startswith(APP) and n.endswith('.aac') and n.count('/') == 2)
     tracks = []
-    # the original AAC, as it is: the Vita plays it on its hardware decoder
-    # (src/vita_aac.c); the Ogg copies below are for the PC build and a fallback
-    for n in aacs:
-        dst = os.path.join(mus_dir, music_name(n) + '.aac')
-        if not os.path.exists(dst):
-            with open(dst, 'wb') as f:
-                f.write(z.read(n))
-    print('%d music tracks kept as AAC (for the Vita hardware decoder)' % len(aacs))
     if not a.ffmpeg:
-        print('ffmpeg not found: no Ogg music for the PC build this time (the Vita plays the AAC)')
+        print('ffmpeg not found: no music this time (install it and run again; the sound effects are kept)')
     else:
         for n in aacs:
             name = music_name(n)
