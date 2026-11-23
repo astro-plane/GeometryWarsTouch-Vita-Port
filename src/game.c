@@ -332,22 +332,20 @@ static void grid_update(float dt)
     }
 }
 
-/* the grid's own sprite list, filled by grid_job (possibly on another core:
- * it touches nothing but the grid, the camera, and this list) */
-#define MAX_GSPR (2 * (GX * GY * 2))
-static PlatSprite gspr[MAX_GSPR];
-static int n_gspr;
+/* The grid's lines, built by grid_job on a helper core, which also turns them
+ * into GPU quads (plat_batch_lines) there.  The job touches nothing but the
+ * grid, the particles (read only), the camera and these lists. */
+#define MAX_GLINES (2 * (GX * GY * 2))
+static PlatLine glines[MAX_GLINES];
+static int n_glines;
+static PlatBatch *grid_batch, *part_batch;
 
 static void gsline(float x0, float y0, float x1, float y1, float w, unsigned c)
 {
-    float dx = x1 - x0, dy = y1 - y0;
-    PlatSprite *s;
-    if (n_gspr == MAX_GSPR) return;
-    s = &gspr[n_gspr++];
-    s->cx = (x0 + x1) / 2; s->cy = (y0 + y1) / 2;
-    s->w = sqrtf(dx * dx + dy * dy) + w; s->h = w;
-    s->ang = atan2f(dy, dx);
-    s->rgba = c;
+    PlatLine *l;
+    if (n_glines == MAX_GLINES) return;
+    l = &glines[n_glines++];
+    l->x0 = x0; l->y0 = y0; l->x1 = x1; l->y1 = y1; l->w = w; l->rgba = c;
 }
 
 static void grid_seg(int i0, int j0, int i1, int j1, int major)
@@ -364,7 +362,7 @@ static void grid_seg(int i0, int j0, int i1, int j1, int major)
 static void grid_draw(void)
 {
     int i, j;
-    n_gspr = 0;
+    n_glines = 0;
     for (j = 0; j < GY; j++)
         for (i = 0; i < GX - 1; i++)
             grid_seg(i, j, i + 1, j, j % 4 == 0);
@@ -373,15 +371,21 @@ static void grid_draw(void)
             grid_seg(i, j, i, j + 1, i % 4 == 0);
 }
 
-/* The grid's work for one frame: move the springs, then build its sprites.
- * Runs on a helper core while this core draws everything else. Nothing may
- * touch the grid or the camera between plat_job_start and plat_job_wait. */
+static void parts_lines(void);
+
+/* The helper core's work for one frame: move the grid's springs, build the
+ * grid's lines and the sparks' lines, and turn both into GPU quads.  Runs
+ * while the game's core draws everything else; nothing may change the grid,
+ * the particles or the camera between plat_job_start and plat_job_wait. */
 static float grid_dt;
 static void grid_job(void *arg)
 {
     (void)arg;
     if (grid_dt > 0) grid_update(grid_dt);
     grid_draw();
+    plat_batch_lines(grid_batch, atlas, ksrc[K_LINE][0], ksrc[K_LINE][1], ksrc[K_LINE][2], ksrc[K_LINE][3],
+                     glines, n_glines);
+    parts_lines();
 }
 
 /* -------------------------------------------------------- particles -- */
@@ -432,17 +436,23 @@ static void parts_update(float dt)
     }
 }
 
-static void parts_draw(void)
+/* the sparks as lines, on the helper core (part of grid_job) */
+static PlatLine plines[MAX_PART];
+static void parts_lines(void)
 {
     int i;
     float k = scr_h / 544.0f;
     for (i = 0; i < n_parts; i++) {
         Part *p = &parts[i];
+        PlatLine *l = &plines[i];
         float a = p->life / p->max, sp = sqrtf(p->vx * p->vx + p->vy * p->vy);
         float len = clampf(sp * 0.02f, 1.0f, 7) * zoom, x = wx(p->x), y = wy(p->y);
         if (sp < 1) sp = 1;
-        sline(x - p->vx / sp * len, y - p->vy / sp * len, x, y, 2.2f * k, with_alpha(p->c, a));
+        l->x0 = x - p->vx / sp * len; l->y0 = y - p->vy / sp * len;
+        l->x1 = x; l->y1 = y; l->w = 2.2f * k; l->rgba = with_alpha(p->c, a);
     }
+    plat_batch_lines(part_batch, atlas, ksrc[K_LINE][0], ksrc[K_LINE][1], ksrc[K_LINE][2], ksrc[K_LINE][3],
+                     plines, n_parts);
 }
 
 /* ============================================================= SIMULATION
@@ -3103,7 +3113,7 @@ static void draw_world(void)
         if (un[i].type) draw_unit(&un[i]);
     if (pl.alive && !(pl.protect > 0 && ((int)(pl.protect * 12) & 1)))
         wshape(pl.x, pl.y, 8.5f, pl.ang, SH_SHIP, 4, 1, 0xffffffffu, 1);
-    parts_draw();
+    /* the sparks are built on the helper core (grid_job) */
 }
 
 /* ============================================================== SCENES */
@@ -3190,6 +3200,8 @@ int game_init(int screen_w, int screen_h)
             p[3] = (unsigned char)(a * 255 + 0.5f);
         }
     atlas = plat_tex_create(px8, 128, 32);
+    grid_batch = plat_batch_new(MAX_GLINES);
+    part_batch = plat_batch_new(MAX_PART);
     free(px8);
     if (!atlas) return -1;
     f = fopen(plat_save_file(), "r");
@@ -3216,6 +3228,8 @@ void game_shutdown(void)
     plat_music_stop();
     plat_tex_free(atlas);
     atlas = NULL;
+    plat_batch_free(grid_batch); grid_batch = NULL;
+    plat_batch_free(part_batch); part_batch = NULL;
 }
 
 static double tick_acc;
@@ -3317,10 +3331,9 @@ int game_frame(double dt, const PlatInput *in)
     (void)last_mult;
 
     /* ---- draw ---- */
-    plat_job_start(grid_job, NULL);          /* the grid moves and draws itself on another core */
+    plat_job_start(grid_job, NULL);          /* grid and sparks: on the helper core */
     draw_reset();
     if (scene == SC_TITLE) {
-        parts_draw();
         int m;
         text(scr_w / 2.0f, 80 * k, 48 * k, 1, 0x7cd8ffffu, 1, GAME_TITLE);
         for (m = 0; m < M_COUNT; m++) {      /* the modes, the chosen one bright */
@@ -3360,8 +3373,8 @@ int game_frame(double dt, const PlatInput *in)
     }
     plat_job_wait();
     plat_begin();
-    if (n_gspr)
-        plat_sprites(atlas, ksrc[K_LINE][0], ksrc[K_LINE][1], ksrc[K_LINE][2], ksrc[K_LINE][3], gspr, n_gspr, 1);
+    plat_batch_draw(grid_batch, 1);          /* built on the helper core */
+    plat_batch_draw(part_batch, 1);          /* additive, so drawing them here looks the same */
     draw_submit();
     plat_end();
     return 1;

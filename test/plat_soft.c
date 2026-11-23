@@ -92,6 +92,34 @@ void plat_sprites(PlatTex *t, int sx, int sy, int sw, int sh, const PlatSprite *
         draw_one(t, sx, sy, sw, sh, s[i].cx, s[i].cy, s[i].w, s[i].h, s[i].ang * 180.0f / 3.14159265f, s[i].rgba, blend);
 }
 
+struct PlatBatch { PlatTex *t; int sx, sy, sw, sh, n, max; PlatLine *l; };
+PlatBatch *plat_batch_new(int max_quads)
+{
+    PlatBatch *b = calloc(1, sizeof *b);
+    b->l = malloc((size_t)max_quads * sizeof *b->l);
+    b->max = max_quads;
+    return b;
+}
+void plat_batch_free(PlatBatch *b) { if (b) { free(b->l); free(b); } }
+void plat_batch_lines(PlatBatch *b, PlatTex *t, int sx, int sy, int sw, int sh, const PlatLine *l, int n)
+{
+    if (n > b->max) n = b->max;
+    b->t = t; b->sx = sx; b->sy = sy; b->sw = sw; b->sh = sh; b->n = n;
+    memcpy(b->l, l, (size_t)n * sizeof *l);
+}
+void plat_batch_draw(PlatBatch *b, int blend)
+{
+    int i;
+    if (!b || !b->t) return;
+    soft_sprites += b->n;
+    for (i = 0; i < b->n; i++) {
+        const PlatLine *p = &b->l[i];
+        float dx = p->x1 - p->x0, dy = p->y1 - p->y0;
+        draw_one(b->t, b->sx, b->sy, b->sw, b->sh, (p->x0 + p->x1) / 2, (p->y0 + p->y1) / 2,
+                 sqrtf(dx * dx + dy * dy) + p->w, p->w, atan2f(dy, dx) * 180.0f / 3.14159265f, p->rgba, blend);
+    }
+}
+
 void plat_fill(float x, float y, float w, float h, unsigned rgba)
 {
     int xi, yi;

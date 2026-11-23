@@ -43,6 +43,20 @@ void plat_end(void);
 void plat_sprites(PlatTex *t, int sx, int sy, int sw, int sh, const PlatSprite *s, int n, int blend);
 void plat_fill(float x, float y, float w, float h, unsigned rgba);
 
+/* A bar from (x0,y0) to (x1,y1), w pixels thick, its ends carried w/2 past
+ * the two points (as a PlatSprite of length len + w would be). */
+typedef struct { float x0, y0, x1, y1, w; unsigned rgba; } PlatLine;
+
+/* A block of quads built away from the game's core: plat_batch_lines may be
+ * called from inside a job (it only does arithmetic into the batch's own
+ * memory, sized once by plat_batch_new), and plat_batch_draw, on the game's
+ * thread, adds the finished block to the frame as one copy. */
+typedef struct PlatBatch PlatBatch;
+PlatBatch *plat_batch_new(int max_quads);
+void plat_batch_free(PlatBatch *b);
+void plat_batch_lines(PlatBatch *b, PlatTex *t, int sx, int sy, int sw, int sh, const PlatLine *l, int n);
+void plat_batch_draw(PlatBatch *b, int blend);
+
 /* One background job at a time on a helper core (plat_sdl.c), or run on the
  * spot (test/plat_soft.c, or when threads are off).  plat_job_wait returns
  * once it is done; a job must not call the drawing functions. */

@@ -14,6 +14,7 @@
 #include <math.h>
 #include "plat.h"
 #ifdef __vita__
+#include <psp2/power.h>
 #include "vita_aac.h"                /* the original AAC music on the hardware decoder */
 #endif
 
@@ -270,6 +271,12 @@ int plat_init(int *screen_w, int *screen_h)
         return -1;
     }
 #ifdef __vita__
+    /* Full speed: 444 MHz on the ARM cores (homebrew starts at 333 unless it
+     * asks), 222 MHz on the bus and the GPU, 166 MHz on the GPU crossbar. */
+    scePowerSetArmClockFrequency(444);
+    scePowerSetBusClockFrequency(222);
+    scePowerSetGpuClockFrequency(222);
+    scePowerSetGpuXbarClockFrequency(166);
     /* The game's sound lives on the memory card (ux0:data/gwvita/app_data/),
      * copied there by hand; app0: is used when it was built into the VPK. */
     mkdir("ux0:data", 0777);
@@ -757,6 +764,77 @@ static int game_main(void *ud)
     SDL_CondBroadcast(f_cond);
     SDL_UnlockMutex(f_lock);
     return 0;
+}
+
+/* ---- batches built on the helper core ---- */
+
+struct PlatBatch { PlatTex *t; SDL_Vertex *v; int nv, max; };
+
+PlatBatch *plat_batch_new(int max_quads)
+{
+    PlatBatch *b = calloc(1, sizeof *b);
+    if (!b) return NULL;
+    b->v = malloc((size_t)max_quads * 4 * sizeof *b->v);   /* all the memory it will ever use */
+    if (!b->v) { free(b); return NULL; }
+    b->max = max_quads;
+    return b;
+}
+
+void plat_batch_free(PlatBatch *b)
+{
+    if (b) { free(b->v); free(b); }
+}
+
+/* the corners come straight from the two ends: no angle, no sine or cosine */
+void plat_batch_lines(PlatBatch *b, PlatTex *t, int sx, int sy, int sw, int sh, const PlatLine *l, int n)
+{
+    float u0, v0, u1, v1;
+    int i;
+    if (!b || !t) return;
+    b->t = t;
+    b->nv = 0;
+    if (n > b->max) n = b->max;
+    u0 = (float)sx / t->w; u1 = (float)(sx + sw) / t->w;
+    v0 = (float)sy / t->h; v1 = (float)(sy + sh) / t->h;
+    for (i = 0; i < n; i++) {
+        const PlatLine *p = &l[i];
+        SDL_Vertex *v = &b->v[i * 4];
+        float dx = p->x1 - p->x0, dy = p->y1 - p->y0, len = sqrtf(dx * dx + dy * dy), h = p->w * 0.5f;
+        float ux = len > 1e-4f ? dx / len : 1, uy = len > 1e-4f ? dy / len : 0;
+        float ax = p->x0 - ux * h, ay = p->y0 - uy * h, bx = p->x1 + ux * h, by = p->y1 + uy * h;
+        float nx = -uy * h, ny = ux * h;
+        SDL_Color col;
+        col.r = (Uint8)(p->rgba >> 24); col.g = (Uint8)(p->rgba >> 16);
+        col.b = (Uint8)(p->rgba >> 8); col.a = (Uint8)p->rgba;
+        v[0].position.x = ax - nx; v[0].position.y = ay - ny;
+        v[1].position.x = bx - nx; v[1].position.y = by - ny;
+        v[2].position.x = bx + nx; v[2].position.y = by + ny;
+        v[3].position.x = ax + nx; v[3].position.y = ay + ny;
+        v[0].tex_coord.x = u0; v[0].tex_coord.y = v0;
+        v[1].tex_coord.x = u1; v[1].tex_coord.y = v0;
+        v[2].tex_coord.x = u1; v[2].tex_coord.y = v1;
+        v[3].tex_coord.x = u0; v[3].tex_coord.y = v1;
+        v[0].color = v[1].color = v[2].color = v[3].color = col;
+    }
+    b->nv = n * 4;
+}
+
+void plat_batch_draw(PlatBatch *b, int blend)
+{
+    if (!b || !b->nv || !b->t) return;
+    if (threaded) {                  /* one copy into the frame being recorded */
+        Frame *f = &frames[f_write];
+        SDL_Vertex *nv = grow(f->v, &f->capv, f->nv + b->nv, sizeof *nv);
+        Cmd *c;
+        if (!nv) return;
+        f->v = nv;
+        if (!(c = new_cmd(f))) return;
+        c->fill = 0; c->t = b->t; c->blend = blend; c->v0 = f->nv; c->quads = b->nv / 4;
+        memcpy(&f->v[f->nv], b->v, (size_t)b->nv * sizeof *b->v);
+        f->nv += b->nv;
+        return;
+    }
+    draw_geometry(b->t, blend, b->v, b->nv / 4);
 }
 
 static void merge_input(const PlatInput *in)

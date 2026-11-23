@@ -160,9 +160,13 @@ given.
 
 The game runs on three of the Vita's cores: the main thread hands each
 finished frame to the GPU and waits for the display; the game thread runs the
-game and builds the next frame's vertices meanwhile; and a helper moves the
-background grid and builds its lines at the same time as the game draws
-everything else. Set `GW_THREADS=0` (desktop) to run everything on one thread.
+game and builds the next frame's vertices meanwhile. A helper on the third
+core moves the background grid, builds the grid's and the sparks' lines and
+turns them into GPU quads (`plat_batch_lines`), all while the game draws
+everything else. The game's core then adds that finished block to the frame
+with one copy. At start-up the Vita build sets full clock speeds: 444 MHz
+ARM, 222 MHz bus and GPU, 166 MHz GPU crossbar. Set `GW_THREADS=0` (desktop)
+to run everything on one thread.
 
 ## Layout
 
