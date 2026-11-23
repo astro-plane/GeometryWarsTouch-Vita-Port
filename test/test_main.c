@@ -110,7 +110,9 @@ int main(int argc, char **argv)
     check("starts on the title", field("scene=") == 0);
     if (have_data) check("title music playing", soft_music_on);
 
-    press(BTN_CROSS); run(0.5);
+    press(BTN_CROSS); run(0.3);
+    check("X fades to black first (loading)", field("scene=") == 3);
+    run(2.5);
     say("started");
     check("X starts a game", field("scene=") == 1 && field("lives=") == 3 && field("bombs=") == 3);
     if (have_data) check("start sound", strstr(soft_log, "Game_start") != NULL);
@@ -141,11 +143,13 @@ int main(int argc, char **argv)
     {
         long b0, s0, e0;
         play_auto(2);
+        run(0.6);                                /* let the shots in flight land first */
         b0 = field("bombs="); s0 = field("score="); e0 = field("enemies=");
         if (field("alive=") == 1 && b0 > 0) {
+            long k0 = field("kills=");
             press(BTN_L); run(0.8);
             say("bomb");
-            check("bomb kills enemies", field("enemies=") < e0 || e0 == 0);
+            check("bomb kills enemies", field("kills=") > k0 || e0 == 0);
             check("bomb used", field("bombs=") == b0 - 1);
             check("bomb scores nothing", field("score=") == s0);
             snap("04_bomb");
@@ -187,7 +191,7 @@ int main(int argc, char **argv)
     /* the recovered rules, one at a time, with the spawn director held back */
     {
         long x0, e0;
-        press(BTN_CROSS); run(0.1);
+        press(BTN_CROSS); run(0.7);
         game_test_quiet();
         run(1.2);                                /* ship's spawn protection runs out */
         say("fresh game, quiet");
@@ -268,7 +272,7 @@ int main(int argc, char **argv)
             game_test_mode(m);
             run(0.4);
             press(BTN_CROSS);
-            run(0.1);
+            run(0.7);                            /* the short fade (sounds already loaded) */
             snprintf(nm, sizeof nm, "mode %s", names[m]);
             say(nm);
             if (m == 5 && !have_levels) { check("sequence needs levels.txt (skipped)", 1); continue; }

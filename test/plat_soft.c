@@ -152,6 +152,7 @@ int plat_music_play(const char *path)
     soft_music_on = 1;
     return 0;
 }
+int plat_loading(void) { return 0; }
 void plat_music_stop(void) { soft_music_on = 0; }
 void plat_music_pause(int p) { (void)p; }
 int plat_music_done(void) { return !soft_music_on; }

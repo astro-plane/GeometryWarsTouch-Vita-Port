@@ -30,12 +30,15 @@
 
 /* ------------------------------------------------------------ state -- */
 
-enum { SC_TITLE, SC_PLAY, SC_OVER };
+enum { SC_TITLE, SC_PLAY, SC_OVER, SC_LOAD };   /* SC_LOAD: black, between choosing a mode and playing */
 
 static int scr_w, scr_h;
 static float zoom, cam_x, cam_y;
 static PlatTex *atlas;
 static int scene, paused;
+static float fade_in;                        /* the black after loading clears over 0.5 s */
+static float load_hold;                      /* how long the black lasts at least */
+static int loaded_once;                      /* the first start waits for every sound; later ones are quick */
 static double now_t, scene_t;                /* clock, and time in this scene */
 static unsigned rng = 12345;
 static const char *music_cur;
@@ -389,7 +392,8 @@ static float grid_dt;
 static void grid_job(void *arg)
 {
     (void)arg;
-    if (grid_dt > 0) grid_update(grid_dt);
+    /* never one big step after a slow frame: the springs would fly apart */
+    if (grid_dt > 0) grid_update(fminf(grid_dt, 1.0f / 30));
     grid_draw();
     plat_batch_lines(grid_batch, atlas, ksrc[K_GLINE][0], ksrc[K_GLINE][1], ksrc[K_GLINE][2], ksrc[K_GLINE][3],
                      glines, n_glines);
@@ -3295,8 +3299,11 @@ int game_frame(double dt, const PlatInput *in)
                 sfx("UI_Change", 47, 0);
             }
             if (scene_t > 0.3 && ((in->pressed & (BTN_CROSS | BTN_START)) || tap) &&
-                (mode != M_SEQUENCE || seq_loaded))
-                start_game();
+                (mode != M_SEQUENCE || seq_loaded)) {
+                scene = SC_LOAD; scene_t = 0;            /* fade to black while everything loads */
+                load_hold = loaded_once ? 0.5f : 2.5f;
+                sfx("UI_Confirm", 47, 0);
+            }
         }
         break;
     case SC_PLAY: {
@@ -3334,6 +3341,15 @@ int game_frame(double dt, const PlatInput *in)
         parts_update(fdt);
         break;
     }
+    case SC_LOAD:                            /* black until the sounds are in and the time is up */
+        grid_dt = fdt;
+        parts_update(fdt);
+        if (scene_t >= load_hold && !plat_loading()) {
+            loaded_once = 1;
+            start_game();
+            fade_in = 0.5f;
+        }
+        break;
     case SC_OVER:
         grid_dt = fdt;
         parts_update(fdt);
@@ -3348,7 +3364,7 @@ int game_frame(double dt, const PlatInput *in)
     /* ---- draw ---- */
     plat_job_start(grid_job, NULL);          /* grid and sparks: on the helper core */
     draw_reset();
-    if (scene == SC_TITLE) {
+    if (scene == SC_TITLE || scene == SC_LOAD) {
         int m;
         text(scr_w / 2.0f, 80 * k, 48 * k, 1, 0x7cd8ffffu, 1, GAME_TITLE);
         for (m = 0; m < M_COUNT; m++) {      /* the modes, the chosen one bright */
@@ -3391,6 +3407,13 @@ int game_frame(double dt, const PlatInput *in)
     plat_batch_draw(grid_batch, 1);          /* built on the helper core */
     plat_batch_draw(part_batch, 1);          /* additive, so drawing them here looks the same */
     draw_submit();
+    if (scene == SC_LOAD) {                  /* fading to black, then black */
+        float a = clampf((float)scene_t / 0.5f, 0, 1);
+        plat_fill(0, 0, (float)scr_w, (float)scr_h, 0x000000u | (unsigned)(a * 255));
+    } else if (fade_in > 0) {                /* and the game fading in */
+        plat_fill(0, 0, (float)scr_w, (float)scr_h, 0x000000u | (unsigned)(clampf(fade_in / 0.5f, 0, 1) * 255));
+        fade_in -= fdt;
+    }
     plat_end();
     return 1;
 }

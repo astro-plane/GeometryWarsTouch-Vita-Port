@@ -46,6 +46,7 @@ static Voice voices[MAX_VOICES];
 static SDL_atomic_t n_ready;
 static SDL_Thread *loader;
 static volatile int loader_quit;
+static SDL_atomic_t loader_done;
 #define REQ_N 64
 static const Sound *req[REQ_N];
 static SDL_atomic_t req_head, req_tail;
@@ -225,8 +226,10 @@ static int sound_loader(void *ud)
     (void)ud;
     SDL_snprintf(dir, sizeof dir, "%ssfx", data_dir);
     d = opendir(dir);
-    if (!d)
+    if (!d) {
+        SDL_AtomicSet(&loader_done, 1);
         return 0;
+    }
     while (!loader_quit && n_sounds < MAX_SOUNDS && (e = readdir(d)) != NULL) {
         char name[48];
         size_t n = strlen(e->d_name);
@@ -241,7 +244,13 @@ static int sound_loader(void *ud)
         }
     }
     closedir(d);
+    SDL_AtomicSet(&loader_done, 1);
     return 0;
+}
+
+int plat_loading(void)
+{
+    return loader && !SDL_AtomicGet(&loader_done);
 }
 
 void plat_sfx(const char *name)
