@@ -426,6 +426,7 @@ static void grid_job(void *arg)
 /* -------------------------------------------------------- particles -- */
 
 #define MAX_PART 3000
+#define PART_CAP 900                          /* most live particles at once; the rest of the pool is unused */
 typedef struct { float x, y, vx, vy, life, max; unsigned c; } Part;
 static Part parts[MAX_PART];
 static int n_parts;
@@ -448,8 +449,8 @@ static void blast(float x, float y, unsigned c, float size)
 static void spark(float x, float y, float vx, float vy, float life, unsigned c)
 {
     Part *p;
-    if (n_parts == MAX_PART) {               /* full: replace a random one */
-        p = &parts[frnd() % MAX_PART];
+    if (n_parts >= PART_CAP) {               /* full: replace a random one */
+        p = &parts[frnd() % PART_CAP];
     } else {
         p = &parts[n_parts++];
     }
