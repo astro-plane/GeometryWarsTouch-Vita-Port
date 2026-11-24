@@ -568,6 +568,8 @@ static void plat_log(const char *fmt, ...)
     if (lock) SDL_UnlockMutex(lock);
 }
 
+void plat_log_line(const char *s) { plat_log("%s", s); }
+
 PlatTex *plat_tex_create(const unsigned char *rgba, int w, int h)
 {
     PlatTex *t = malloc(sizeof *t);
