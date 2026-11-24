@@ -25,6 +25,7 @@ static void frame(void)
     game_frame(1.0 / 60, &in);
 }
 
+#define SPLASH_SECS 9.6
 static void run(double secs) { double t; for (t = 0; t < secs; t += 1.0 / 60) frame(); }
 static void press(int b) { in.held |= b; frame(); in.held &= ~b; frame(); }
 
@@ -95,6 +96,12 @@ int main(int argc, char **argv)
         plat_init(&w, &h);
         if (game_init(w, h) != 0) { printf("game_init failed\n"); return 1; }
     }
+    run(4); snap("00_splash"); say("splash");
+    check("starts on the splash", field("scene=") == 4);
+    run(4.5);
+    check("the splash stays 9 s", field("scene=") == 4);
+    run(1.0);
+    check("then the title", field("scene=") == 0);
     have_data = soft_music_on;
     {
         char lp[600];
@@ -185,7 +192,7 @@ int main(int argc, char **argv)
         plat_init(&w, &h);
         game_init(w, h);
         check("high score loaded at start", field("best=") == b);
-        run(1); snap("08_title_with_best");
+        run(SPLASH_SECS); run(1); snap("08_title_with_best");
     }
 
     /* the recovered rules, one at a time, with the spawn director held back */

@@ -30,7 +30,14 @@
 
 /* ------------------------------------------------------------ state -- */
 
-enum { SC_TITLE, SC_PLAY, SC_OVER, SC_LOAD };   /* SC_LOAD: black, between choosing a mode and playing */
+enum { SC_TITLE, SC_PLAY, SC_OVER, SC_LOAD,     /* SC_LOAD: black, between choosing a mode and playing */
+       SC_SPLASH };                              /* at start-up, while everything loads */
+#define SPLASH_TIME 9.0                          /* the splash stays at least this long */
+/* the title screen's text: green phosphor, like an old IBM monochrome monitor */
+#define PHOS_HI  0x33ff33ffu                     /* bright */
+#define PHOS_MID 0x22c822ffu
+#define PHOS_LO  0x1a8f1affu                     /* the modes not chosen */
+#define PHOS_DIM 0x146a14ffu
 
 static int scr_w, scr_h;
 static float zoom, cam_x, cam_y;
@@ -39,6 +46,9 @@ static int scene, paused;
 static float fade_in;                        /* the black after loading clears over 0.5 s */
 static float load_hold;                      /* how long the black lasts at least */
 static int loaded_once;                      /* the first start waits for every sound; later ones are quick */
+static PlatTex *splash_tex;                  /* app_data/splash.bmp, if there is one */
+static int splash_w, splash_h;
+static float splash_out;                     /* the fade from the splash to black */
 static double now_t, scene_t;                /* clock, and time in this scene */
 static unsigned rng = 12345;
 static const char *music_cur;
@@ -1203,9 +1213,12 @@ static void lc_tick_normal(void)            /* LevelControl::TickStateNormal */
 
 static void lc_modes(void);
 
+static int test_quiet;                       /* game_test_quiet: no spawning at all (tests only) */
+
 static void lc_update(void)                  /* LevelControl::Update 0x0005c97c */
 {
     float r;
+    if (test_quiet) return;
     if (lc.pause == 1) { lc.timer = 3; lc.pause = 2; }   /* a ship was lost */
     if (mode == M_KING) {                    /* King: hurry when no Grunt/Proton/Spinner/Snake is left */
         if (lc.timer > 0) {
@@ -1518,6 +1531,7 @@ static void casual_spawn(int type, int *wall_left)   /* SpawnCasual 0x0005b0a4 *
 static void casual_update(void)
 {
     int target, b, i, k1 = 0, k2 = 0, k3 = 0, k4 = 0, wall_left = 1;
+    if (test_quiet) return;
     if (play_t >= DEADLINE_TIME) return;
     cg.delay -= TICK;
     if (cg.delay > 0) return;
@@ -2905,7 +2919,13 @@ static void sim_tick(const PlatInput *in)
  * This port's own look: every unit is a few glowing lines in the colour the
  * game's tuning gives it. */
 
-static const float SH_SHIP[] = { 1.0f, 0, -0.75f, 0.9f, -0.35f, 0, -0.75f, -0.9f };
+/* the "player" model in Data.bin (Model record 28, part "body"): the polyline
+ * (-2,0) (2,-6) (7,-4) (0,-8) (-7,0) plus its mirror in y (a SectionTransform
+ * with TransformScale (1,-1,1)), in world units; divided by 8 here, so drawing it
+ * with r = 8 is the game's size. The open end of the octagon is the front (+x). */
+static const float SH_SHIP[] = {
+    -0.875f, 0, 0, 1, 0.875f, 0.5f, 0.25f, 0.75f, -0.25f, 0,
+    0.25f, -0.75f, 0.875f, -0.5f, 0, -1, -0.875f, 0 };
 static const float SH_DIAMOND[] = { 0, -1, 0.7f, 0, 0, 1, -0.7f, 0 };
 static const float SH_SQUARE[] = { -0.75f, -0.75f, 0.75f, -0.75f, 0.75f, 0.75f, -0.75f, 0.75f };
 static const float SH_INNER[] = { 0, -0.6f, 0.6f, 0, 0, 0.6f, -0.6f, 0 };
@@ -3096,7 +3116,7 @@ static void hud(void)
     text(scr_w - 16 * k, 12 * k, 16 * k, 2, 0x9ad0ffffu, 0.9f, buf);
     text(scr_w - 16 * k, 34 * k, 12 * k, 2, 0x82f532ffu, 0.8f, modes[mode].name);   /* which mode this is */
     for (i = 0; i < lives && i < 9; i++)     /* ships left, to the left of centre */
-        sshape(cx - 30 * k - i * 24 * k, 22 * k, 9 * k, -PI / 2, SH_SHIP, 4, 1, 0xffffffffu, 0.9f);
+        sshape(cx - 30 * k - i * 24 * k, 22 * k, 9 * k, -PI / 2, SH_SHIP, 9, 0, 0xffffffffu, 0.9f);
     for (i = 0; i < bombs && i < 9; i++) {   /* bombs, to the right */
         float bx = cx + 30 * k + i * 24 * k, by = 22 * k, rr = 7 * k, lx = 0, ly = 0;
         int s;
@@ -3179,7 +3199,7 @@ static void draw_world(void)
     for (i = 0; i < MAX_UNITS; i++)
         if (un[i].type) draw_unit(&un[i]);
     if (pl.alive && !(pl.protect > 0 && ((int)(pl.protect * 12) & 1)))
-        wshape(pl.x, pl.y, 8.5f, pl.ang, SH_SHIP, 4, 1, 0xffffffffu, 1);
+        wshape(pl.x, pl.y, 8, pl.ang, SH_SHIP, 9, 0, 0xffffffffu, 1);
     /* the sparks are built on the helper core (grid_job) */
 }
 
@@ -3205,6 +3225,7 @@ static void clear_field(void)
 static void start_game(void)                 /* the mode's Gr* function, ResetGameInfo 0x0004e57c */
 {
     clear_field();
+    test_quiet = 0;
     n_parts = 0;
     grid_reset();
     score = 0; mult = 1; next_banner = 10;
@@ -3236,6 +3257,44 @@ static void start_game(void)                 /* the mode's Gr* function, ResetGa
     sfx("Game_start", 25, 0);
     music_cur = NULL;
     music(modes[mode].music);
+}
+
+/* An uncompressed 24- or 32-bit BMP (what prep_assets.py writes) as a texture. */
+static PlatTex *load_bmp(const char *path, int *w, int *h)
+{
+    unsigned char hd[54], *row = NULL, *px = NULL;
+    PlatTex *t = NULL;
+    FILE *f = fopen(path, "rb");
+    int bpp, stride, x, y, flip = 1;
+    long off, ww, hh;
+    if (!f) return NULL;
+    if (fread(hd, 1, 54, f) != 54 || hd[0] != 'B' || hd[1] != 'M') goto done;
+#define LE32(p) ((unsigned)(p)[0] | (unsigned)(p)[1] << 8 | (unsigned)(p)[2] << 16 | (unsigned)(p)[3] << 24)
+    off = (long)LE32(hd + 10);
+    ww = (int)LE32(hd + 18);
+    hh = (int)LE32(hd + 22);                 /* negative: stored top row first */
+    if (hh < 0) { hh = -hh; flip = 0; }
+    bpp = hd[28];
+    if ((bpp != 24 && bpp != 32) || LE32(hd + 30) != 0) goto done;   /* BI_RGB only */
+    if (ww <= 0 || hh <= 0 || ww > 2048 || hh > 2048) goto done;
+    stride = (int)((ww * (bpp / 8) + 3) & ~3);
+    row = malloc(stride);
+    px = malloc(ww * hh * 4);
+    if (!row || !px || fseek(f, off, SEEK_SET) != 0) goto done;
+    for (y = 0; y < hh; y++) {
+        unsigned char *o = px + (flip ? hh - 1 - y : y) * ww * 4;
+        if (fread(row, 1, stride, f) != (size_t)stride) goto done;
+        for (x = 0; x < ww; x++) {
+            const unsigned char *i = row + x * (bpp / 8);
+            o[x * 4] = i[2]; o[x * 4 + 1] = i[1]; o[x * 4 + 2] = i[0]; o[x * 4 + 3] = 255;
+        }
+    }
+    t = plat_tex_create(px, (int)ww, (int)hh);
+    *w = (int)ww; *h = (int)hh;
+done:
+    free(row); free(px);
+    fclose(f);
+    return t;
 }
 
 int game_init(int screen_w, int screen_h)
@@ -3292,8 +3351,14 @@ int game_init(int screen_w, int screen_h)
     seq_load();
     grid_reset();
     cam_x = 0; cam_y = 0;
-    scene = SC_TITLE;
-    music("main_menu");
+    {                                        /* the splash, while the sounds load */
+        char path[600];
+        snprintf(path, sizeof path, "%ssplash.bmp", plat_data_dir());
+        if (splash_tex) plat_tex_free(splash_tex);
+        splash_tex = load_bmp(path, &splash_w, &splash_h);
+    }
+    scene = SC_SPLASH; scene_t = 0;
+    splash_out = 0;
     return 0;
 }
 
@@ -3302,6 +3367,8 @@ void game_shutdown(void)
     plat_music_stop();
     plat_tex_free(atlas);
     atlas = NULL;
+    if (splash_tex) plat_tex_free(splash_tex);
+    splash_tex = NULL;
     plat_batch_free(grid_batch); grid_batch = NULL;
     plat_batch_free(part_batch); part_batch = NULL;
 }
@@ -3396,6 +3463,15 @@ int game_frame(double dt, const PlatInput *in)
         parts_update(fdt);
         break;
     }
+    case SC_SPLASH:                          /* SPLASH_TIME at least, and until every sound is in */
+        if (scene_t >= SPLASH_TIME - 0.5 && !plat_loading()) splash_out += fdt;
+        if (splash_out >= 0.5f) {
+            loaded_once = 1;
+            scene = SC_TITLE; scene_t = 0;
+            fade_in = 0.5f;
+            music("main_menu");
+        }
+        break;
     case SC_LOAD:                            /* black until the sounds are in and the time is up */
         grid_dt = fdt;
         parts_update(fdt);
@@ -3419,25 +3495,28 @@ int game_frame(double dt, const PlatInput *in)
     /* ---- draw ---- */
     plat_job_start(grid_job, NULL);          /* grid and sparks: on the helper core */
     draw_reset();
-    if (scene == SC_TITLE || scene == SC_LOAD) {
+    if (scene == SC_SPLASH) {
+        if (!splash_tex)                     /* no splash.bmp: the name on black */
+            text(scr_w / 2.0f, scr_h / 2.0f - 24 * k, 48 * k, 1, 0x7cd8ffffu, 1, GAME_TITLE);
+    } else if (scene == SC_TITLE || scene == SC_LOAD) {
         int m;
-        text(scr_w / 2.0f, 80 * k, 48 * k, 1, 0x7cd8ffffu, 1, GAME_TITLE);
+        text(scr_w / 2.0f, 80 * k, 48 * k, 1, PHOS_HI, 1, GAME_TITLE);
         for (m = 0; m < M_COUNT; m++) {      /* the modes, the chosen one bright */
             float y = 140 * k + m * 27 * k;
             int sel = m == mode;
-            text(scr_w * 0.40f, y, (sel ? 19 : 15) * k, 0, sel ? 0x82f532ffu : 0x5a8ab0ffu, sel ? 1 : 0.8f,
+            text(scr_w * 0.40f, y, (sel ? 19 : 15) * k, 0, sel ? PHOS_HI : PHOS_LO, sel ? 1 : 0.8f,
                  modes[m].name);
             if (bests[m] > 0) {
                 fmt_num(num, sizeof num, (long)bests[m]);
-                text(scr_w * 0.62f, y + 2 * k, 13 * k, 0, sel ? 0xffe070ffu : 0x8a7a50ffu, 1, num);
+                text(scr_w * 0.62f, y + 2 * k, 13 * k, 0, sel ? PHOS_MID : PHOS_DIM, 1, num);
             }
-            if (sel) sshape(scr_w * 0.40f - 18 * k, y + 9 * k, 8 * k, 0, SH_SHIP, 4, 1, 0xffffffffu, 1);
+            if (sel) sshape(scr_w * 0.40f - 18 * k, y + 9 * k, 8 * k, 0, SH_SHIP, 9, 0, 0xffffffffu, 1);
         }
         if (mode == M_SEQUENCE && !seq_loaded)
-            text(scr_w / 2.0f, 425 * k, 13 * k, 1, 0xff6a5affu, 1, "SEQUENCE NEEDS LEVELS.TXT IN APP_DATA (RUN PREP_ASSETS)");
+            text(scr_w / 2.0f, 425 * k, 13 * k, 1, PHOS_MID, 1, "SEQUENCE NEEDS LEVELS.TXT IN APP_DATA (RUN PREP_ASSETS)");
         else if (((int)(scene_t * 2)) & 1 || scene_t < 0.5)
-            text(scr_w / 2.0f, 425 * k, 18 * k, 1, 0xffffffffu, 1, "UP/DOWN CHOOSE   X START");
-        text(scr_w / 2.0f, 480 * k, 12 * k, 1, 0x9ad0ffffu, 0.8f, "LEFT STICK MOVE   RIGHT STICK FIRE   L/R BOMB   START PAUSE");
+            text(scr_w / 2.0f, 425 * k, 18 * k, 1, PHOS_HI, 1, "UP/DOWN CHOOSE   X START");
+        text(scr_w / 2.0f, 480 * k, 12 * k, 1, PHOS_MID, 0.8f, "LEFT STICK MOVE   RIGHT STICK FIRE   L/R BOMB   START PAUSE");
     } else {
         draw_world();
         hud();
@@ -3459,6 +3538,20 @@ int game_frame(double dt, const PlatInput *in)
     }
     plat_job_wait();
     plat_begin();
+    if (scene == SC_SPLASH) {
+        if (splash_tex) {                    /* fill the screen, cropping the longer side */
+            float sc = fmaxf((float)scr_w / splash_w, (float)scr_h / splash_h);
+            PlatSprite sp = { scr_w / 2.0f, scr_h / 2.0f, splash_w * sc, splash_h * sc, 0, 0xffffffffu };
+            plat_sprites(splash_tex, 0, 0, splash_w, splash_h, &sp, 1, 0);
+        }
+        draw_submit();
+        {                                    /* in from black, and out to black at the end */
+            float a = fmaxf(1 - (float)scene_t / 0.5f, splash_out / 0.5f);
+            if (a > 0) plat_fill(0, 0, (float)scr_w, (float)scr_h, (unsigned)(clampf(a, 0, 1) * 255));
+        }
+        plat_end();
+        return 1;
+    }
     plat_batch_draw(grid_batch, 1);          /* built on the helper core */
     plat_batch_draw(part_batch, 1);          /* additive, so drawing them here looks the same */
     draw_submit();
@@ -3515,6 +3608,9 @@ void game_test_spawn(int type, float x, float y)
 /* tests only: hold the spawn director back */
 void game_test_quiet(void)
 {
+    int i;
+    for (i = 0; i < MAX_UNITS; i++) un[i].type = U_NONE;   /* and nothing already out */
+    test_quiet = 1;
     lc.timer = 1e9f;
     cg.delay = 1e9f;
     sq.wait = 1e9f; sq.left = 1e9f;

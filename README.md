@@ -99,6 +99,17 @@ and `app_data/manifest.txt`, about 28 MB. Without ffmpeg it still makes the
 sound effects; run it again later to add the music. **Do not share app_data or a
 VPK built with it**: it is the game's sound.
 
+The start-up splash (shown for 9 seconds while the sounds load) is
+`app_data/splash.bmp`, made from a picture of your own:
+
+```sh
+python3 tools/make_splash.py my_splash.jpg app_data/splash.bmp
+```
+
+Without it the splash is the game's name on black. The ship's outline is the
+`player` model from `Data.bin` (Model record 28), read with the game's own
+reflection schema (`Model`, `Part`, `SectionMesh`, `MeshSegment`, `Vertex`).
+
 ## Building
 
 ```sh
