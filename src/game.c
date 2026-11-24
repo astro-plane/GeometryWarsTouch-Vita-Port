@@ -430,6 +430,21 @@ typedef struct { float x, y, vx, vy, life, max; unsigned c; } Part;
 static Part parts[MAX_PART];
 static int n_parts;
 
+/* a death's flash: a soft coloured glow that swells and fades where a unit broke up */
+#define MAX_BLAST 24
+typedef struct { float x, y, t, life, size; unsigned c; } Blast;
+static Blast blasts[MAX_BLAST];              /* zeroed: t >= life, so every slot starts free */
+
+static void blast(float x, float y, unsigned c, float size)
+{
+    int i, slot = -1;
+    for (i = 0; i < MAX_BLAST; i++)
+        if (blasts[i].t >= blasts[i].life) { slot = i; break; }
+    if (slot < 0) slot = frnd() % MAX_BLAST;
+    blasts[slot].x = x; blasts[slot].y = y; blasts[slot].t = 0;
+    blasts[slot].life = 0.45f; blasts[slot].size = size; blasts[slot].c = c;
+}
+
 static void spark(float x, float y, float vx, float vy, float life, unsigned c)
 {
     Part *p;
@@ -450,10 +465,26 @@ static void burst(float x, float y, unsigned c, int n, float speed)
     }
 }
 
+/* the ship's trail colour: pink, yellow, green, blue, back to pink, one colour
+ * every 1.25 s, so the trail shows the whole cycle along its length */
+static unsigned trail_colour(void)
+{
+    static const unsigned pal[4] = { 0xff3ec8ffu, 0xffe23cffu, 0x46ff46ffu, 0x3c9cffffu };
+    float h = fmodf((float)now_t * 0.8f, 4.0f), f = h - floorf(h);
+    int i = (int)h & 3, j = (i + 1) & 3, s;
+    unsigned out = 0;
+    for (s = 24; s >= 0; s -= 8) {
+        int ca = (pal[i] >> s) & 255, cb = (pal[j] >> s) & 255;
+        out |= (unsigned)(int)(ca + (cb - ca) * f) << s;
+    }
+    return out;
+}
+
 static void parts_update(float dt)
 {
     int i;
     float keep = expf(-2.6f * dt);
+    for (i = 0; i < MAX_BLAST; i++) blasts[i].t += dt;
     for (i = 0; i < n_parts; i++) {
         Part *p = &parts[i];
         p->life -= dt;
@@ -471,23 +502,25 @@ static void parts_update(float dt)
     }
 }
 
-/* the sparks as lines, on the helper core (part of grid_job) */
-static PlatLine plines[MAX_PART];
+/* the sparks as lines, on the helper core (part of grid_job): each spark is a
+ * thin bright core with a wide faint halo, so the debris reads as glowing */
+static PlatLine plines[2 * MAX_PART];
 static void parts_lines(void)
 {
     int i;
     float k = scr_h / 544.0f;
     for (i = 0; i < n_parts; i++) {
         Part *p = &parts[i];
-        PlatLine *l = &plines[i];
+        PlatLine *h = &plines[2 * i], *l = &plines[2 * i + 1];
         float a = p->life / p->max, sp = sqrtf(p->vx * p->vx + p->vy * p->vy);
         float len = clampf(sp * 0.02f, 1.0f, 7) * zoom, x = wx(p->x), y = wy(p->y);
         if (sp < 1) sp = 1;
         l->x0 = x - p->vx / sp * len; l->y0 = y - p->vy / sp * len;
         l->x1 = x; l->y1 = y; l->w = 2.2f * k; l->rgba = with_alpha(p->c, a);
+        *h = *l; h->w = 6.5f * k; h->rgba = with_alpha(p->c, a * 0.28f);
     }
     plat_batch_lines(part_batch, atlas, ksrc[K_LINE][0], ksrc[K_LINE][1], ksrc[K_LINE][2], ksrc[K_LINE][3],
-                     plines, n_parts);
+                     plines, 2 * n_parts);
 }
 
 /* ============================================================= SIMULATION
@@ -806,6 +839,7 @@ static void kill_unit(int i, int dmg)
     }
     burst(x, y, ut[type].color, type == U_WELL ? 90 : type == U_BODY ? 8 : 26, type == U_WELL ? 340 : 230);
     burst(x, y, 0xffffffffu, type == U_BODY ? 2 : 6, 160);
+    blast(x, y, ut[type].color, type == U_WELL ? 160 : type == U_BODY ? 18 : 48);
     grid_force(x, y, type == U_WELL ? 900 : 260, type == U_WELL ? 90 : 45);
     kills++;
     if (type == U_WELL) {
@@ -2812,6 +2846,16 @@ static void sim_tick(const PlatInput *in)
         if (pl.x > AW - pl.r) { pl.x = AW - pl.r; pl.vx = 0; }
         if (pl.y < -AH + pl.r) { pl.y = -AH + pl.r; pl.vy = 0; }
         if (pl.y > AH - pl.r) { pl.y = AH - pl.r; pl.vy = 0; }
+        /* the trail: sparks shed behind the ship while it moves, in the cycling colour */
+        {
+            float sp = sqrtf(pl.vx * pl.vx + pl.vy * pl.vy);
+            if (sp > 60) {
+                int n = sp > 400 ? 3 : 1, k;
+                for (k = 0; k < n; k++)
+                    spark(pl.x, pl.y, -pl.vx * 0.2f + frange(-18, 18), -pl.vy * 0.2f + frange(-18, 18),
+                          frange(0.35f, 0.7f), trail_colour());
+            }
+        }
     }
 
     /* bullets */
@@ -3182,16 +3226,29 @@ static void draw_world(void)
     gline(wx(AW), wy(-AH), wx(AW), wy(AH), wall, 1);
     gline(wx(AW), wy(AH), wx(-AW), wy(AH), wall, 1);
     gline(wx(-AW), wy(AH), wx(-AW), wy(-AH), wall, 1);
-    /* a soft glow behind every unit, geom and the ship (all in one batch) */
+    /* a soft colour aura around every unit, geom and the ship: a wide faint
+     * halo and a nearer, brighter core, both in the unit's own colour */
     for (i = 0; i < MAX_UNITS; i++)
         if (un[i].type) {
             const Unit *u = &un[i];
             float a = u->appear < 1 ? 0.25f : 1, r = u->r * zoom * (u->type == U_WELL ? 5 : 3.6f);
             unsigned c = u->type == U_WELL && !u->n ? 0x3a6cffffu : u->type == U_TITAN ? ut[u->n].color : ut[u->type].color;
+            unsigned ac = u->flash > 0 ? 0xffffffffu : c;
             if (u->type == U_BODY && (u->n % 3)) continue;
             if (u->type == U_HILL || u->type == U_CYTO || (u->type == U_MINE && u->n == 2)) continue;
             if (u->type == U_TITAN || u->type == U_BLACKHOLE) r = u->r * zoom * 1.8f;
-            sdot(wx(u->x), wy(u->y), r, with_alpha(u->flash > 0 ? 0xffffffffu : c, 0.42f * a));
+            sdot(wx(u->x), wy(u->y), r * 1.9f, with_alpha(ac, 0.16f * a));
+            sdot(wx(u->x), wy(u->y), r, with_alpha(ac, 0.42f * a));
+        }
+    /* deaths: the flash where a unit broke up, swelling and fading */
+    for (i = 0; i < MAX_BLAST; i++)
+        if (blasts[i].t < blasts[i].life) {
+            const Blast *b = &blasts[i];
+            float f = b->t / b->life, a = (1 - f) * (1 - f);
+            float r = b->size * zoom * (0.4f + 0.6f * f), x = wx(b->x), y = wy(b->y);
+            sdot(x, y, r * 2.6f, with_alpha(b->c, 0.28f * a));
+            sdot(x, y, r, with_alpha(b->c, 0.6f * a));
+            sdot(x, y, r * 0.4f, with_alpha(0xffffffffu, 0.85f * a));
         }
     for (i = 0; i < MAX_MOTE; i++)
         if (mote[i].alive)
@@ -3388,7 +3445,7 @@ int game_init(int screen_w, int screen_h)
     }
     atlas = plat_tex_create(px8, aw, ah);
     grid_batch = plat_batch_new(MAX_GLINES);
-    part_batch = plat_batch_new(MAX_PART);
+    part_batch = plat_batch_new(2 * MAX_PART);   /* a core and a halo per spark */
     free(px8);
     if (!atlas) return -1;
     f = fopen(plat_save_file(), "r");
