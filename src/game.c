@@ -431,20 +431,6 @@ typedef struct { float x, y, vx, vy, life, max; unsigned c; } Part;
 static Part parts[MAX_PART];
 static int n_parts;
 
-/* a death's flash: a soft coloured glow that swells and fades where a unit broke up */
-#define MAX_BLAST 24
-typedef struct { float x, y, t, life, size; unsigned c; } Blast;
-static Blast blasts[MAX_BLAST];              /* zeroed: t >= life, so every slot starts free */
-
-static void blast(float x, float y, unsigned c, float size)
-{
-    int i, slot = -1;
-    for (i = 0; i < MAX_BLAST; i++)
-        if (blasts[i].t >= blasts[i].life) { slot = i; break; }
-    if (slot < 0) slot = frnd() % MAX_BLAST;
-    blasts[slot].x = x; blasts[slot].y = y; blasts[slot].t = 0;
-    blasts[slot].life = 0.45f; blasts[slot].size = size; blasts[slot].c = c;
-}
 
 static void spark(float x, float y, float vx, float vy, float life, unsigned c)
 {
@@ -485,7 +471,6 @@ static void parts_update(float dt)
 {
     int i;
     float keep = expf(-2.6f * dt);
-    for (i = 0; i < MAX_BLAST; i++) blasts[i].t += dt;
     for (i = 0; i < n_parts; i++) {
         Part *p = &parts[i];
         p->life -= dt;
@@ -841,7 +826,6 @@ static void kill_unit(int i, int dmg)
     }
     burst(x, y, ut[type].color, type == U_WELL ? 90 : type == U_BODY ? 8 : 26, type == U_WELL ? 340 : 230);
     burst(x, y, 0xffffffffu, type == U_BODY ? 2 : 6, 160);
-    blast(x, y, ut[type].color, type == U_WELL ? 160 : type == U_BODY ? 18 : 48);
     grid_force(x, y, type == U_WELL ? 900 : 260, type == U_WELL ? 90 : 45);
     kills++;
     if (type == U_WELL) {
@@ -3243,16 +3227,6 @@ static void draw_world(void)
             if (u->type == U_TITAN || u->type == U_BLACKHOLE) r = u->r * zoom * 1.8f;
             sdot(wx(u->x), wy(u->y), r * 1.9f, with_alpha(ac, 0.16f * a));
             sdot(wx(u->x), wy(u->y), r, with_alpha(ac, 0.42f * a));
-        }
-    /* deaths: the flash where a unit broke up, swelling and fading */
-    for (i = 0; i < MAX_BLAST; i++)
-        if (blasts[i].t < blasts[i].life) {
-            const Blast *b = &blasts[i];
-            float f = b->t / b->life, a = (1 - f) * (1 - f);
-            float r = b->size * zoom * (0.4f + 0.6f * f), x = wx(b->x), y = wy(b->y);
-            sdot(x, y, r * 2.6f, with_alpha(b->c, 0.28f * a));
-            sdot(x, y, r, with_alpha(b->c, 0.6f * a));
-            sdot(x, y, r * 0.4f, with_alpha(0xffffffffu, 0.85f * a));
         }
     for (i = 0; i < MAX_MOTE; i++)
         if (mote[i].alive)
