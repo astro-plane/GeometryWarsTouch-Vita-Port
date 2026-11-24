@@ -692,6 +692,7 @@ static struct {
 /* game info: per-player block at gGameInfo + 0x7770 */
 static long long score, best;
 static int lives, bombs, mult, next_banner;
+static int cheat_lives;                      /* debug: infinite lives once a middle-screen tap has happened */
 static long long next_bomb_at, next_life_at;
 static int kills, best_beaten;
 static double play_t;
@@ -3486,6 +3487,19 @@ int game_frame(double dt, const PlatInput *in)
     int tap = in->n > 0 && !prev_touch;
     prev_touch = in->n > 0;
     if (in->quit) return 0;
+    /* debug cheat: a touch in the middle third of the screen during play turns
+     * on infinite lives for the rest of the session */
+    if (scene == SC_PLAY && in->n > 0) {
+        int t;
+        for (t = 0; t < in->n; t++) {
+            float tx = in->t[t].x, ty = in->t[t].y;
+            if (tx > scr_w / 3.0f && tx < scr_w * 2 / 3.0f && ty > scr_h / 3.0f && ty < scr_h * 2 / 3.0f) {
+                if (!cheat_lives) plat_log_line("cheat: infinite lives on");
+                cheat_lives = 1;
+            }
+        }
+    }
+    if (cheat_lives && scene == SC_PLAY && lives < 99) lives = 99;
     if (dt > 0.1) dt = 0.1;                  /* after a stall, don't run away */
     if (dt < 0) dt = 0;
     now_t += dt;
