@@ -322,12 +322,21 @@ static void grid_force(float x, float y, float strength, float radius)
         }
 }
 
+/* The springs (stiffness up to k_home + 8 k_link, about 46 rad/s) are stable
+ * only for steps shorter than about 0.043 s: a frame is cut into steps of at
+ * most 1/120 s, so a slow frame moves the grid as far as it should without
+ * blowing it apart. Once blown apart (inf/NaN) it never recovered, and those
+ * vertices blacked out whole frames on the Vita's GPU: reset it if that ever
+ * happens. */
 static void grid_update(float dt)
 {
     const float k_home = 45, k_link = 260, damp = 4.0f;
-    int i, j, step;
-    float h = dt / 2;
-    for (step = 0; step < 2; step++) {
+    int i, j, step, steps = (int)ceilf(dt * 120);
+    float h, sum = 0;
+    if (steps < 2) steps = 2;
+    if (steps > 16) steps = 16;
+    h = dt / steps;
+    for (step = 0; step < steps; step++) {
         float keep = expf(-damp * h);
         for (j = 1; j < GY - 1; j++)
             for (i = 1; i < GX - 1; i++) {
@@ -344,6 +353,10 @@ static void grid_update(float dt)
                 gpy[j][i] += gvy[j][i] * h;
             }
     }
+    for (j = 1; j < GY - 1; j++)
+        for (i = 1; i < GX - 1; i++)
+            sum += gpx[j][i] + gpy[j][i] + gvx[j][i] + gvy[j][i];
+    if (!isfinite(sum)) grid_reset();
 }
 
 /* The grid's lines, built by grid_job on a helper core, which also turns them
