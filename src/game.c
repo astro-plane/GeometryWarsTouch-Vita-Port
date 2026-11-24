@@ -3213,7 +3213,6 @@ static void draw_world(void)
             if (u->type == U_BODY && (u->n % 3)) continue;
             if (u->type == U_HILL || u->type == U_CYTO || (u->type == U_MINE && u->n == 2)) continue;
             if (u->type == U_TITAN || u->type == U_BLACKHOLE) r = u->r * zoom * 1.8f;
-            sdot(wx(u->x), wy(u->y), r * 1.9f, with_alpha(ac, 0.16f * a));
             sdot(wx(u->x), wy(u->y), r, with_alpha(ac, 0.42f * a));
         }
     for (i = 0; i < MAX_MOTE; i++)
