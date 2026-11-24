@@ -3005,6 +3005,9 @@ static const float SH_CHEVRON[] = { 1.0f, 0, -0.8f, 0.8f, -0.35f, 0, -0.8f, -0.8
 static const float SH_HEAD[] = { 1.2f, 0, 0.1f, 0.8f, -0.8f, 0.45f, -0.8f, -0.45f, 0.1f, -0.8f };
 static const float SH_PENT[] = { 1, 0, 0.31f, 0.95f, -0.81f, 0.59f, -0.81f, -0.59f, 0.31f, -0.95f };
 static const float SH_SLIVER[] = { 0, -1, 0.35f, 0, 0, 1, -0.35f, 0 };
+/* the player's bullet: a narrow yellow triangle outline, about 1 wide to 3.5 long,
+ * apex forward. Scale is a best guess from the reference image (unverified). */
+static const float SH_BULLET[] = { 0, -1.75f, 0.5f, 1.75f, -0.5f, 1.75f };
 
 static float glow_k(void) { return scr_h / 544.0f; }
 
@@ -3222,7 +3225,6 @@ static void hud(void)
 static void draw_world(void)
 {
     int i;
-    float k = glow_k();
     unsigned wall = 0x9ad0ffffu;
     gline(wx(-AW), wy(-AH), wx(AW), wy(-AH), wall, 1);      /* the arena's wall */
     gline(wx(AW), wy(-AH), wx(AW), wy(AH), wall, 1);
@@ -3275,13 +3277,17 @@ static void draw_world(void)
             wshape(m->x, m->y, 3.2f + (m->value > 1 ? 1.2f : 0) + (m->value >= 5 ? 1.2f : 0),
                    m->ang, SH_SLIVER, 4, 1, 0x82f532ffu, a);
         }
-    for (i = 0; i < MAX_BUL; i++)
-        if (bul[i].alive) {
-            float sp = sqrtf(bul[i].vx * bul[i].vx + bul[i].vy * bul[i].vy) + 0.01f;
-            float x = wx(bul[i].x), y = wy(bul[i].y), tx = bul[i].vx / sp * 6 * zoom, ty = bul[i].vy / sp * 6 * zoom;
-            sline(x - tx, y - ty, x, y, 7 * k, 0xffd06055u);
-            sline(x - tx, y - ty, x, y, 2.4f * k, 0xfff0a0ffu);
-        }
+    {
+        float saved_glow = glow_w;
+        glow_w = 5;                          /* a narrow glow suits the small triangle */
+        for (i = 0; i < MAX_BUL; i++)
+            if (bul[i].alive) {
+                /* apex points along the velocity: local (0,-1) rotated by ang = heading + 90 deg */
+                float ang = atan2f(bul[i].vy, bul[i].vx) + PI / 2;
+                wshape(bul[i].x, bul[i].y, 3.2f, ang, SH_BULLET, 3, 1, 0xffe830ffu, 1);
+            }
+        glow_w = saved_glow;
+    }
     for (i = 0; i < MAX_UNITS; i++)
         if (un[i].type) draw_unit(&un[i]);
     if (pl.alive) {
