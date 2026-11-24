@@ -589,7 +589,6 @@ static int unit_new(int type, float x, float y)
             u->r = ut[type].r;
             u->sx = u->sy = 1;
             u->link = u->head = -1;
-            u->e = u->x; u->f = u->y;   /* gate: last tick's position (+0xa4) */
             return i;
         }
     return -1;
@@ -731,8 +730,6 @@ static void titan_killed(Unit *u, int dmg, float bvx, float bvy);
 static float hit_vx, hit_vy;                 /* the velocity of the shot that is hitting */
 static int gate_chain;                       /* GameInfo +0x75f0: gates flown through in a row */
 static float gate_last_t;                    /* +0x75ec */
-static int gate_ric_frames = 1000;           /* 0x2c64b0: frames since the last bar ricochet sound */
-static int gate_ric_alt;                     /* 0x2c64ad: alternates sounds 0x33 / 0x34 */
 
 static void spawn_tiny(float x, float y, float bvx, float bvy, float a)
 {
@@ -2467,8 +2464,6 @@ static void tick_gate(int i)                 /* Gate::Tick 0x0002d458 (simplifie
     Unit *p;
     if (!unit_alive(u->link, u->link_id)) { kill_unit(i, DMG_TOUCH); return; }
     p = &un[u->link];
-    u->e = u->x; u->f = u->y;                /* +0xa4/+0xa8: where it was before this move */
-    u->d = fmaxf(u->d - 0.2f, 0);            /* +0x98: the bar's ricochet flash */
     if (u->n) {                              /* the leader steers the pair */
         float mx = (u->x + p->x) / 2, my = (u->y + p->y) / 2, a;
         u->ang += 2 * TICK * 0.35f;          /* Unit.Gate.RotationSpeed */
@@ -2647,51 +2642,6 @@ static float seg_dist2(float px, float py, float ax, float ay, float bx, float b
     return dx * dx + dy * dy;
 }
 
-/* UpdateProjectiles_Gates 0x0003e01c: the bar between a gate's ends is a
- * mirror. The shot's side of the bar is taken last tick (against where the
- * ends were) and this tick; if it changed, and the shot's path crosses the
- * bar within its length, the velocity is reflected about the bar's normal and
- * the shot is put back 2 units out on the side it came from. The leader's bar
- * flashes and the ricochet sound plays at most once every 34 frames. The ends
- * themselves still take shots (Gate::Damage). */
-static void bullet_gates(Bullet *b)
-{
-    float vx = b->x - b->px, vy = b->y - b->py;
-    int i;
-    for (i = 0; i < MAX_UNITS; i++) {
-        Unit *u = &un[i], *p;
-        float pdx, pdy, dx, dy, len2, s0, s1, den, t, inv, nx, ny, dot, hx, hy;
-        if (u->type != U_GATE || !u->n || u->appear < 1 || !unit_alive(u->link, u->link_id)) continue;
-        p = &un[u->link];
-        pdx = p->e - u->e; pdy = p->f - u->f;
-        if (pdx * pdx + pdy * pdy < 1) continue;
-        dx = p->x - u->x; dy = p->y - u->y;
-        len2 = dx * dx + dy * dy;
-        if (len2 < 1) continue;
-        s0 = (b->px - u->e) * pdy - pdx * (b->py - u->f);
-        s1 = (b->x - u->x) * dy - dx * (b->y - u->y);
-        if ((s0 < 0) == (s1 < 0)) continue;
-        den = dx * vy - dy * vx;
-        if (den == 0) continue;
-        t = ((b->px - u->x) * vy + (u->y - b->py) * vx) / den;
-        if (!(t >= 0 && t <= 1)) continue;
-        inv = 1 / sqrtf(len2);
-        nx = dy * inv; ny = -dx * inv;
-        if (s0 < 0) { nx = -nx; ny = -ny; }
-        dot = 2 * (nx * b->vx + ny * b->vy);
-        b->vx -= nx * dot; b->vy -= ny * dot;
-        hx = u->x + dx * t; hy = u->y + dy * t;
-        b->x = hx + 2 * nx; b->y = hy + 2 * ny;
-        u->d = 1;
-        if (gate_ric_frames >= 34) {
-            sfx("Enemy_gate_ricochet", 9, 0);   /* 0x33 and 0x34 both name this file */
-            gate_ric_frames = 0;
-            gate_ric_alt ^= 1;
-        }
-        return;
-    }
-}
-
 static int segs_cross(float ax, float ay, float bx, float by, float cx, float cy, float dx, float dy)
 {
     float d1 = (dx - cx) * (ay - cy) - (dy - cy) * (ax - cx);
@@ -2706,7 +2656,6 @@ static void sim_tick(const PlatInput *in)
     int i, j;
     float opx = pl.x, opy = pl.y;
     play_t += TICK;
-    gate_ric_frames++;
     if (mode == M_DEADLINE) {                /* CasualGameUpdate; the game ends at 3 minutes */
         casual_update();
         if (play_t >= DEADLINE_TIME) { game_over(); return; }
@@ -2783,7 +2732,6 @@ static void sim_tick(const PlatInput *in)
         b->px = b->x; b->py = b->y;
         b->x += b->vx * TICK * MOVE;
         b->y += b->vy * TICK * MOVE;
-        bullet_gates(b);
         if (b->x < -AW || b->x > AW || b->y < -AH || b->y > AH) {   /* walls end them */
             b->alive = 0;
             burst(clampf(b->x, -AW, AW), clampf(b->y, -AH, AH), 0xffc080ffu, 3, 90);
@@ -2995,11 +2943,7 @@ static void draw_unit(const Unit *u)
     case U_GATE:
         if (u->n && unit_alive(u->link, u->link_id)) {
             const Unit *p = &un[u->link];
-            /* RenderGate 0x0002d2f8: the bar goes toward white by flash^3 */
-            float f = u->d * u->d * u->d;
-            unsigned c0 = 0x5080ffffu, cr = 0x50 + (unsigned)((0xff - 0x50) * f),
-                     cg = 0x80 + (unsigned)((0xff - 0x80) * f);
-            gline(wx(x), wy(y), wx(p->x), wy(p->y), (cr << 24) | (cg << 16) | (c0 & 0xffff), a * 0.9f);   /* Unit.Gate.BarColour */
+            gline(wx(x), wy(y), wx(p->x), wy(p->y), 0x5080ffffu, a * 0.9f);   /* Unit.Gate.BarColour */
         }
         wcircle(x, y, r, 10, c, a);
         break;
