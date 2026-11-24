@@ -730,6 +730,11 @@ static void add_points(int base, int dmg, float x, float y)
     }
     if (!(modes[mode].flags & 2) && score >= next_bomb_at) {   /* extra bomb, same rule */
         if (bombs < 9) bombs++;
+        {   /* diagnostics: bombs earned */
+            char s[96];
+            snprintf(s, sizeof s, "bomb earned at score %lld, now %d", score, bombs);
+            plat_log_line(s);
+        }
         next_bomb_at *= 10;
         sfx("pickup_smartbomb", 31, 0);
     }
@@ -2664,6 +2669,11 @@ static void update_player(const PlatInput *in)
         pl.bomb_cd = 0.2f;
         if (bombs > 0) {
             bombs--;
+            {   /* diagnostics: bombs used */
+                char s[96];
+                snprintf(s, sizeof s, "bomb used at score %lld, %d left", score, bombs);
+                plat_log_line(s);
+            }
             add_ring(DMG_BOMB, pl.x, pl.y, 400, 533.2f);
             if (mode == M_DEADLINE) casual_bomb();
             grid_force(pl.x, pl.y, 1600, 260);
