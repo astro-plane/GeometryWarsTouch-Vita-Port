@@ -353,7 +353,7 @@ int plat_init(int *screen_w, int *screen_h)
 #endif
     SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");
-    win = SDL_CreateWindow("GWars Vita (reimplementation)", SDL_WINDOWPOS_CENTERED,
+    win = SDL_CreateWindow("Geometry Wars 2: Portable", SDL_WINDOWPOS_CENTERED,
                            SDL_WINDOWPOS_CENTERED, SCREEN_W, SCREEN_H, SDL_WINDOW_SHOWN);
     if (!win) {
         fprintf(stderr, "SDL_CreateWindow: %s\n", SDL_GetError());

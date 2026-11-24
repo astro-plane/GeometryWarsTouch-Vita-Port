@@ -37,7 +37,7 @@ if(DESKTOP)
 else()
   include("$ENV{VITASDK}/share/vita.cmake" REQUIRED)
 
-  set(VITA_APP_NAME "Neon Grid")         # placeholder name on the home screen
+  set(VITA_APP_NAME "Geometry Wars 2: Portable")   # the name on the home screen
   set(VITA_TITLEID  "NGRD00001")
   set(VITA_VERSION  "00.10")
 

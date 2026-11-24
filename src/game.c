@@ -20,7 +20,7 @@
 #include <string.h>
 #include "game.h"
 
-#define GAME_TITLE "GWARS TOUCH"
+#define GAME_TITLE "GEOMETRY WARS 2: PORTABLE"
 #define PI 3.14159265f
 
 #define AW 300.0f                            /* kMapWidth: half width */
@@ -3547,10 +3547,10 @@ int game_frame(double dt, const PlatInput *in)
     draw_reset();
     if (scene == SC_SPLASH) {
         if (!splash_w)                       /* no splash.bmp: the name on black */
-            text(scr_w / 2.0f, scr_h / 2.0f - 24 * k, 48 * k, 1, 0x7cd8ffffu, 1, GAME_TITLE);
+            text(scr_w / 2.0f, scr_h / 2.0f - 17 * k, 34 * k, 1, 0x7cd8ffffu, 1, GAME_TITLE);
     } else if (scene == SC_TITLE || scene == SC_LOAD) {
         int m;
-        text(scr_w / 2.0f, 80 * k, 48 * k, 1, PHOS_HI, 1, GAME_TITLE);
+        text(scr_w / 2.0f, 86 * k, 34 * k, 1, PHOS_HI, 1, GAME_TITLE);   /* 25 letters: 840 px */
         for (m = 0; m < M_COUNT; m++) {      /* the modes, the chosen one bright */
             float y = 140 * k + m * 27 * k;
             int sel = m == mode;

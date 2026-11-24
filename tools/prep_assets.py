@@ -98,6 +98,34 @@ def level_scripts(data):
     return found
 
 
+def trim_box(ffmpeg, path):
+    """The square around a picture's content, leaving out a near-black border:
+    (w, h, x, y) for ffmpeg's crop, or None. Reads the picture as grey bytes."""
+    try:
+        info = subprocess.run([ffmpeg, '-v', 'error', '-i', path, '-frames:v', '1', '-f', 'rawvideo',
+                               '-pix_fmt', 'gray', '-'], capture_output=True, check=True).stdout
+        probe = subprocess.run([ffmpeg, '-hide_banner', '-i', path], capture_output=True, text=True).stderr
+        import re
+        w, h = map(int, re.search(r', (\d{2,5})x(\d{2,5})', probe).groups())
+        if len(info) != w * h:
+            return None
+        row = info[(h // 2) * w:(h // 2 + 1) * w]
+        col = info[w // 2::w][:h]
+        lit = lambda line: [i for i, v in enumerate(line) if v > 40]
+        xs, ys = lit(row), lit(col)
+        if not xs or not ys:
+            return None
+        x0, x1, y0, y1 = xs[0], xs[-1], ys[0], ys[-1]
+        side = max(x1 - x0, y1 - y0) + 4
+        cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
+        side = min(side, w, h)
+        x = max(0, min(w - side, cx - side // 2))
+        y = max(0, min(h - side, cy - side // 2))
+        return side, side, x, y
+    except Exception:
+        return None
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('ipa', help='GWarsTouch_v1.2.0_os30.ipa (your own copy)')
@@ -109,6 +137,8 @@ def main():
                     'reads: flac, wav, mp3, m4a...), named like the game\'s: "Pacifism.flac", "Main Menu.mp3", '
                     '"retro_evolved.wav"; these are used instead of the app\'s mono AAC, in stereo')
     ap.add_argument('--redo-icon', action='store_true', help='make app_data/icon0.png again')
+    ap.add_argument('--icon', help='a picture of your own for the Vita icon instead of the app\'s (any size; '
+                    'the middle square is used; dark borders around a round picture are trimmed)')
     ap.add_argument('--redo-music', action='store_true',
                     help='convert the music again even where app_data already has it (after a quality change)')
     a = ap.parse_args()
@@ -167,15 +197,25 @@ def main():
         except Exception:
             art = None
     icon = os.path.join(a.out, 'icon0.png')
-    if art and a.ffmpeg and (not os.path.exists(icon) or a.redo_icon):
+    if (art or a.icon) and a.ffmpeg and (not os.path.exists(icon) or a.redo_icon or a.icon):
         with tempfile.TemporaryDirectory() as td:
-            src = os.path.join(td, 'art')
-            with open(src, 'wb') as f:
-                f.write(z.read(art))
+            if a.icon:
+                src = a.icon
+            else:
+                src = os.path.join(td, 'art')
+                with open(src, 'wb') as f:
+                    f.write(z.read(art))
+            # the middle square, less any near-black border (a round picture on black
+            # then fills the Vita's round icon), at 128x128 in 256 colours
+            vf = r'crop=min(iw\,ih):min(iw\,ih),'
+            trim = trim_box(a.ffmpeg, src) if a.icon else None
+            if trim:
+                vf = 'crop=%d:%d:%d:%d,' % trim
             r = subprocess.run([a.ffmpeg, '-v', 'error', '-y', '-i', src, '-vf',
-                                'scale=128:128:flags=lanczos,split[a][b];[a]palettegen=max_colors=256[p];'
+                                vf + 'scale=128:128:flags=lanczos,split[a][b];[a]palettegen=max_colors=256[p];'
                                 '[b][p]paletteuse=dither=none', '-frames:v', '1', '-pix_fmt', 'pal8', icon])
-            print('Vita icon from %s' % art if r.returncode == 0 else 'could not make the Vita icon')
+            print('Vita icon from %s' % (os.path.basename(a.icon) if a.icon else art)
+                  if r.returncode == 0 else 'could not make the Vita icon')
 
     # ---- music ----
     aacs = sorted(n for n in names if n.startswith(APP) and n.endswith('.aac') and n.count('/') == 2)

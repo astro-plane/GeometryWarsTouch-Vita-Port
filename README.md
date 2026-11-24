@@ -1,5 +1,7 @@
 # GWars:Touch on the PS Vita
 
+On the Vita it is called *Geometry Wars 2: Portable*.
+
 A PS Vita port of GWars:Touch, all ten single-player modes, (Activision, 2010,
 iPhone/iPad), built by reverse engineering the iPhone program.
 
@@ -114,7 +116,9 @@ renderer and any draw or texture the Vita refused.
 
 `prep_assets.py` also makes `app_data/icon0.png`, the Vita's home-screen icon,
 from the app's own icon (the IPA's 512x512 `iTunesArtwork`, at 128x128 in 8-bit
-colour); the build uses it in place of the placeholder in `sce_sys/`.
+colour), or from a picture of your own with `--icon my_icon.jpg` (a round picture
+on black is trimmed to fill the Vita's round icon); the build uses it in place of
+the placeholder in `sce_sys/`.
 
 The start-up splash (shown for 9 seconds while the sounds load) is
 `app_data/splash.bmp`, made from a picture of your own:
