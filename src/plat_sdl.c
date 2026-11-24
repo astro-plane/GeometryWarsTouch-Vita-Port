@@ -15,6 +15,7 @@
 #include "plat.h"
 
 static void plat_log(const char *fmt, ...);
+static void reserve_frames(void);
 #ifdef __vita__
 #include <psp2/power.h>
 #endif
@@ -214,8 +215,21 @@ static int load_sound(Sound *s, const char *name)
         SDL_free(cvt.buf);
         return -1;
     }
-    s->pcm = (Sint16 *)cvt.buf;
-    s->frames = (Uint32)(cvt.needed ? cvt.len_cvt : (int)len) / 2;
+    /* keep only what the converted sound uses: the conversion buffer is
+     * len_mult times the 24 kHz stereo input, and keeping all of it took the
+     * whole heap (the draw lists then could not grow: a black screen) */
+    {
+        size_t used = (size_t)(cvt.needed ? cvt.len_cvt : (int)len);
+        Sint16 *pcm = SDL_malloc(used ? used : 2);
+        if (!pcm) {
+            SDL_free(cvt.buf);
+            return -1;
+        }
+        memcpy(pcm, cvt.buf, used);
+        SDL_free(cvt.buf);
+        s->pcm = pcm;
+        s->frames = (Uint32)(used / 2);
+    }
     s->failed = 0;
     return 0;
 }
@@ -233,6 +247,8 @@ static int sound_loader(void *ud)
         SDL_AtomicSet(&loader_done, 1);
         return 0;
     }
+    int failed = 0;
+    size_t bytes = 0;
     while (!loader_quit && n_sounds < MAX_SOUNDS && (e = readdir(d)) != NULL) {
         char name[48];
         size_t n = strlen(e->d_name);
@@ -241,12 +257,15 @@ static int sound_loader(void *ud)
         memcpy(name, e->d_name, n - 4);
         name[n - 4] = 0;
         if (load_sound(&sounds[n_sounds], name) == 0) {
+            bytes += sounds[n_sounds].frames * 2;
             n_sounds++;
             SDL_MemoryBarrierRelease();
             SDL_AtomicSet(&n_ready, n_sounds);
-        }
+        } else if (failed++ < 5)
+            plat_log("effect %s did not load", name);
     }
     closedir(d);
+    plat_log("%d effects loaded (%.1f MB), %d failed", n_sounds, bytes / 1048576.0, failed);
     SDL_AtomicSet(&loader_done, 1);
     return 0;
 }
@@ -362,6 +381,7 @@ int plat_init(int *screen_w, int *screen_h)
     want.channels = 2;
     want.samples = 1024;
     want.callback = mix_cb;
+    reserve_frames();                        /* the draw lists' memory first, then the effects' */
     audio = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
     if (audio) {
         SDL_PauseAudioDevice(audio, 0);
@@ -665,6 +685,18 @@ static void *grow(void *p, int *cap, int need, size_t each)
     }
     *cap = c;
     return q;
+}
+
+/* Room for a busy frame in all three draw lists, taken at start-up so that
+ * nothing loaded later can leave them without memory. They still grow if a
+ * frame ever needs more. */
+static void reserve_frames(void)
+{
+    int i;
+    for (i = 0; i < 3; i++) {
+        frames[i].v = grow(frames[i].v, &frames[i].capv, 65536, sizeof *frames[i].v);
+        frames[i].c = grow(frames[i].c, &frames[i].capc, 2048, sizeof *frames[i].c);
+    }
 }
 
 static Cmd *new_cmd(Frame *f)
