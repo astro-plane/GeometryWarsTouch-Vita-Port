@@ -99,6 +99,19 @@ and `app_data/manifest.txt`, about 28 MB. Without ffmpeg it still makes the
 sound effects; run it again later to add the music. **Do not share app_data or a
 VPK built with it**: it is the game's sound.
 
+The app's music is mono AAC at about 144 kbps; it is converted at Vorbis
+quality 6. For better music, put your own copies of the tracks (flac, wav, mp3,
+m4a...) in a folder, named like the game's (`Pacifism.flac`, `Main Menu.mp3`,
+`Retro Evolved.wav`, ...), and they are used instead, in stereo at quality 7:
+
+```sh
+python3 tools/prep_assets.py ~/Downloads/GWarsTouch_v1.2.0_os30.ipa app_data --music-dir ~/Music/gw
+python3 tools/prep_assets.py ~/Downloads/GWarsTouch_v1.2.0_os30.ipa app_data --redo-music   # the app's own, again
+```
+
+If something looks wrong on the Vita, `ux0:data/gwvita/log.txt` lists the
+renderer and any draw or texture the Vita refused.
+
 The start-up splash (shown for 9 seconds while the sounds load) is
 `app_data/splash.bmp`, made from a picture of your own:
 

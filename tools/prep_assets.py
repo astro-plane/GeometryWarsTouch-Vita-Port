@@ -104,6 +104,11 @@ def main():
     ap.add_argument('--ffmpeg', default=shutil.which('ffmpeg'), help='ffmpeg, for the music')
     ap.add_argument('--builtin-vorbis', action='store_true',
                     help="use ffmpeg's own Vorbis encoder straight away (it is tried anyway when libvorbis is missing)")
+    ap.add_argument('--music-dir', help='a folder of your own, better copies of the tracks (any format ffmpeg '
+                    'reads: flac, wav, mp3, m4a...), named like the game\'s: "Pacifism.flac", "Main Menu.mp3", '
+                    '"retro_evolved.wav"; these are used instead of the app\'s mono AAC, in stereo')
+    ap.add_argument('--redo-music', action='store_true',
+                    help='convert the music again even where app_data already has it (after a quality change)')
     a = ap.parse_args()
 
     z = zipfile.ZipFile(a.ipa)
@@ -151,6 +156,18 @@ def main():
     # ---- music ----
     aacs = sorted(n for n in names if n.startswith(APP) and n.endswith('.aac') and n.count('/') == 2)
     tracks = []
+    own = {}                                   # track name -> a better file of the user's
+    if a.music_dir:
+        exts = ('.flac', '.wav', '.aif', '.aiff', '.mp3', '.m4a', '.aac', '.ogg', '.opus', '.wma', '.alac')
+        key = lambda t: ''.join(ch for ch in t.lower() if ch.isalnum())
+        for fn in sorted(os.listdir(a.music_dir)):
+            base, ext = os.path.splitext(fn)
+            if ext.lower() in exts:
+                own[key(base.split('.wav')[0])] = os.path.join(a.music_dir, fn)
+        wanted = {key(music_name(n)) for n in aacs}
+        for k in sorted(set(own) - wanted):
+            print('  --music-dir: %s matches no track (they are: %s)' % (
+                os.path.basename(own[k]), ', '.join(sorted(music_name(n) for n in aacs))))
     if not a.ffmpeg:
         print('ffmpeg not found: no music this time (install it and run again; the sound effects are kept)')
     else:
@@ -158,17 +175,24 @@ def main():
             name = music_name(n)
             dst = os.path.join(mus_dir, name + '.ogg')
             tracks.append(name)
-            if os.path.exists(dst):
+            mine = own.get(''.join(ch for ch in name if ch.isalnum()))
+            if os.path.exists(dst) and not mine and not a.redo_music:
                 continue
             with tempfile.TemporaryDirectory() as td:
-                src = os.path.join(td, 'in.aac')
-                with open(src, 'wb') as f:
-                    f.write(z.read(n))
+                if mine:
+                    src = mine
+                else:
+                    src = os.path.join(td, 'in.aac')
+                    with open(src, 'wb') as f:
+                        f.write(z.read(n))
                 tmp = dst + '.part'
                 # libvorbis if this ffmpeg has it; otherwise ffmpeg's own Vorbis
-                # encoder, which only takes stereo (the tracks are mono: copied to both)
-                encoders = [['-c:a', 'libvorbis', '-q:a', '4'],
-                            ['-ac', '2', '-c:a', 'vorbis', '-strict', '-2', '-q:a', '5']]
+                # encoder, which only takes stereo (the app's tracks are mono: copied
+                # to both). Quality 6 (about 190 kbps stereo) for the app's 144 kbps
+                # AAC, so converting loses little more; 7 for files of your own.
+                q = '7' if mine else '6'
+                encoders = [['-ac', '2', '-c:a', 'libvorbis', '-q:a', q] if mine else ['-c:a', 'libvorbis', '-q:a', q],
+                            ['-ac', '2', '-c:a', 'vorbis', '-strict', '-2', '-q:a', q]]
                 if a.builtin_vorbis:
                     encoders = encoders[1:]
                 for enc in encoders:
@@ -182,7 +206,7 @@ def main():
                     tracks.pop()
                     continue
                 os.replace(tmp, dst)
-            print('  music: %s' % name)
+            print('  music: %s%s' % (name, ' (from %s)' % os.path.basename(mine) if mine else ''))
         print('%d music tracks' % len(tracks))
 
     with open(os.path.join(a.out, 'manifest.txt'), 'w') as f:

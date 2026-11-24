@@ -6,12 +6,15 @@
 #include <SDL.h>
 #include <vorbis/vorbisfile.h>
 #include <stdio.h>
+#include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <dirent.h>
 #include <math.h>
 #include "plat.h"
+
+static void plat_log(const char *fmt, ...);
 #ifdef __vita__
 #include <psp2/power.h>
 #endif
@@ -338,6 +341,12 @@ int plat_init(int *screen_w, int *screen_h)
     }
     SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
     SDL_GetRendererOutputSize(ren, &win_w, &win_h);
+    {
+        SDL_RendererInfo ri;
+        if (SDL_GetRendererInfo(ren, &ri) == 0)
+            plat_log("renderer %s, %dx%d, max texture %dx%d", ri.name, win_w, win_h,
+                     ri.max_texture_width, ri.max_texture_height);
+    }
     *screen_w = win_w;
     *screen_h = win_h;
     if (SDL_NumJoysticks() > 0)
@@ -503,6 +512,34 @@ double plat_time(void)
 const char *plat_data_dir(void) { return data_dir; }
 const char *plat_save_file(void) { return save_file; }
 
+/* A short log of what went wrong (ux0:data/gwvita/log.txt on the Vita), so a
+ * problem seen on the console can be read back: at most 80 lines a run. */
+static void plat_log(const char *fmt, ...)
+{
+    static int lines;
+    static SDL_mutex *lock;
+    char path[700], *slash;
+    va_list ap;
+    FILE *f;
+    if (lines >= 80) return;
+    if (!lock) lock = SDL_CreateMutex();
+    if (lock) SDL_LockMutex(lock);
+    SDL_snprintf(path, sizeof path, "%s", save_file);
+    slash = strrchr(path, '/');
+    SDL_snprintf(slash ? slash + 1 : path, sizeof path - (size_t)(slash ? slash + 1 - path : 0), "log.txt");
+    f = fopen(path, lines ? "a" : "w");
+    if (f) {
+        va_start(ap, fmt);
+        fprintf(f, "%8.2f ", plat_time());
+        vfprintf(f, fmt, ap);
+        fputc('\n', f);
+        va_end(ap);
+        fclose(f);
+    }
+    lines++;
+    if (lock) SDL_UnlockMutex(lock);
+}
+
 PlatTex *plat_tex_create(const unsigned char *rgba, int w, int h)
 {
     PlatTex *t = malloc(sizeof *t);
@@ -512,6 +549,7 @@ PlatTex *plat_tex_create(const unsigned char *rgba, int w, int h)
     t->h = h;
     t->t = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STATIC, w, h);
     if (!t->t || SDL_UpdateTexture(t->t, NULL, rgba, w * 4) != 0) {
+        plat_log("texture %dx%d failed: %s", w, h, SDL_GetError());
         if (t->t)
             SDL_DestroyTexture(t->t);
         free(t);
@@ -620,8 +658,10 @@ static void *grow(void *p, int *cap, int need, size_t each)
     while (c < need)
         c *= 2;
     q = realloc(p, (size_t)c * each);
-    if (!q)
+    if (!q) {
+        plat_log("out of memory growing a draw list to %d x %d bytes", c, (int)each);
         return NULL;
+    }
     *cap = c;
     return q;
 }
@@ -658,7 +698,8 @@ static void draw_geometry(PlatTex *t, int blend, const SDL_Vertex *v, int quads)
     SDL_SetTextureBlendMode(t->t, blend == 1 ? SDL_BLENDMODE_ADD : SDL_BLENDMODE_BLEND);
     for (k = 0; k < quads; k += BATCH) {
         m = quads - k < BATCH ? quads - k : BATCH;
-        SDL_RenderGeometry(ren, t->t, v + k * 4, m * 4, idx, m * 6);
+        if (SDL_RenderGeometry(ren, t->t, v + k * 4, m * 4, idx, m * 6) != 0)
+            plat_log("RenderGeometry (%d quads, %dx%d texture) failed: %s", m, t->w, t->h, SDL_GetError());
     }
 }
 

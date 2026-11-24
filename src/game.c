@@ -46,8 +46,8 @@ static int scene, paused;
 static float fade_in;                        /* the black after loading clears over 0.5 s */
 static float load_hold;                      /* how long the black lasts at least */
 static int loaded_once;                      /* the first start waits for every sound; later ones are quick */
-static PlatTex *splash_tex;                  /* app_data/splash.bmp, if there is one */
-static int splash_w, splash_h;
+static int splash_w, splash_h;              /* app_data/splash.bmp, if there is one: kept in the */
+#define SPLASH_Y 80                          /* atlas texture from this row down (one texture, as before) */
 static float splash_out;                     /* the fade from the splash to black */
 static double now_t, scene_t;                /* clock, and time in this scene */
 static unsigned rng = 12345;
@@ -3259,11 +3259,10 @@ static void start_game(void)                 /* the mode's Gr* function, ResetGa
     music(modes[mode].music);
 }
 
-/* An uncompressed 24- or 32-bit BMP (what prep_assets.py writes) as a texture. */
-static PlatTex *load_bmp(const char *path, int *w, int *h)
+/* An uncompressed 24- or 32-bit BMP (what make_splash.py writes) as RGBA pixels. */
+static unsigned char *load_bmp(const char *path, int *w, int *h)
 {
-    unsigned char hd[54], *row = NULL, *px = NULL;
-    PlatTex *t = NULL;
+    unsigned char hd[54], *row = NULL, *px = NULL, *t = NULL;
     FILE *f = fopen(path, "rb");
     int bpp, stride, x, y, flip = 1;
     long off, ww, hh;
@@ -3289,7 +3288,7 @@ static PlatTex *load_bmp(const char *path, int *w, int *h)
             o[x * 4] = i[2]; o[x * 4 + 1] = i[1]; o[x * 4 + 2] = i[0]; o[x * 4 + 3] = 255;
         }
     }
-    t = plat_tex_create(px, (int)ww, (int)hh);
+    t = px; px = NULL;
     *w = (int)ww; *h = (int)hh;
 done:
     free(row); free(px);
@@ -3299,8 +3298,8 @@ done:
 
 int game_init(int screen_w, int screen_h)
 {
-    unsigned char *px8 = calloc(128 * 64 * 4, 1);
-    int x, y;
+    unsigned char *px8 = calloc(128 * 64 * 4, 1), *spl;
+    int x, y, aw = 128, ah = 64;
     FILE *f;
     if (!px8) return -1;
     scr_w = screen_w;
@@ -3332,7 +3331,25 @@ int game_init(int screen_w, int screen_h)
             p[0] = p[1] = p[2] = 255;
             p[3] = (unsigned char)(a * 255 + 0.5f);
         }
-    atlas = plat_tex_create(px8, 128, 64);
+    {   /* the splash goes in the same texture, below the atlas with an empty gutter: the
+         * Vita's renderer drew nothing right after a frame that used a second texture */
+        char path[600];
+        snprintf(path, sizeof path, "%ssplash.bmp", plat_data_dir());
+        splash_w = splash_h = 0;
+        spl = load_bmp(path, &splash_w, &splash_h);
+        if (spl && splash_w <= 1024 && splash_h <= 1024 - SPLASH_Y) {
+            unsigned char *big = calloc((size_t)1024 * (SPLASH_Y + splash_h) * 4, 1);
+            if (big) {
+                for (y = 0; y < 64; y++) memcpy(big + (size_t)y * 1024 * 4, px8 + y * 128 * 4, 128 * 4);
+                for (y = 0; y < splash_h; y++)
+                    memcpy(big + ((size_t)(SPLASH_Y + y) * 1024) * 4, spl + (size_t)y * splash_w * 4, (size_t)splash_w * 4);
+                free(px8);
+                px8 = big; aw = 1024; ah = SPLASH_Y + splash_h;
+            } else splash_w = splash_h = 0;
+        } else splash_w = splash_h = 0;
+        free(spl);
+    }
+    atlas = plat_tex_create(px8, aw, ah);
     grid_batch = plat_batch_new(MAX_GLINES);
     part_batch = plat_batch_new(MAX_PART);
     free(px8);
@@ -3351,12 +3368,6 @@ int game_init(int screen_w, int screen_h)
     seq_load();
     grid_reset();
     cam_x = 0; cam_y = 0;
-    {                                        /* the splash, while the sounds load */
-        char path[600];
-        snprintf(path, sizeof path, "%ssplash.bmp", plat_data_dir());
-        if (splash_tex) plat_tex_free(splash_tex);
-        splash_tex = load_bmp(path, &splash_w, &splash_h);
-    }
     scene = SC_SPLASH; scene_t = 0;
     splash_out = 0;
     return 0;
@@ -3367,8 +3378,6 @@ void game_shutdown(void)
     plat_music_stop();
     plat_tex_free(atlas);
     atlas = NULL;
-    if (splash_tex) plat_tex_free(splash_tex);
-    splash_tex = NULL;
     plat_batch_free(grid_batch); grid_batch = NULL;
     plat_batch_free(part_batch); part_batch = NULL;
 }
@@ -3496,7 +3505,7 @@ int game_frame(double dt, const PlatInput *in)
     plat_job_start(grid_job, NULL);          /* grid and sparks: on the helper core */
     draw_reset();
     if (scene == SC_SPLASH) {
-        if (!splash_tex)                     /* no splash.bmp: the name on black */
+        if (!splash_w)                       /* no splash.bmp: the name on black */
             text(scr_w / 2.0f, scr_h / 2.0f - 24 * k, 48 * k, 1, 0x7cd8ffffu, 1, GAME_TITLE);
     } else if (scene == SC_TITLE || scene == SC_LOAD) {
         int m;
@@ -3539,10 +3548,10 @@ int game_frame(double dt, const PlatInput *in)
     plat_job_wait();
     plat_begin();
     if (scene == SC_SPLASH) {
-        if (splash_tex) {                    /* fill the screen, cropping the longer side */
+        if (splash_w) {                      /* fill the screen, cropping the longer side */
             float sc = fmaxf((float)scr_w / splash_w, (float)scr_h / splash_h);
             PlatSprite sp = { scr_w / 2.0f, scr_h / 2.0f, splash_w * sc, splash_h * sc, 0, 0xffffffffu };
-            plat_sprites(splash_tex, 0, 0, splash_w, splash_h, &sp, 1, 0);
+            plat_sprites(atlas, 0, SPLASH_Y, splash_w, splash_h, &sp, 1, 0);
         }
         draw_submit();
         {                                    /* in from black, and out to black at the end */
