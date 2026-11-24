@@ -135,10 +135,11 @@ static void sline(float x0, float y0, float x1, float y1, float w, unsigned c)
 }
 
 /* a glowing segment: a wide faint halo and a thin bright core */
+static float glow_w = 14;                    /* gline's glow width (narrower for small, detailed shapes) */
 static void gline(float x0, float y0, float x1, float y1, unsigned c, float a)
 {
     float k = scr_h / 544.0f;
-    sline(x0, y0, x1, y1, 14 * k, with_alpha(c, a * 0.38f));
+    sline(x0, y0, x1, y1, glow_w * k, with_alpha(c, a * (glow_w < 14 ? 0.5f : 0.38f)));
     sline(x0, y0, x1, y1, 2.4f * k, with_alpha(c, a));
 }
 
@@ -3140,7 +3141,7 @@ static void hud(void)
     text(scr_w - 16 * k, 12 * k, 16 * k, 2, 0x9ad0ffffu, 0.9f, buf);
     text(scr_w - 16 * k, 34 * k, 12 * k, 2, 0x82f532ffu, 0.8f, modes[mode].name);   /* which mode this is */
     for (i = 0; i < lives && i < 9; i++)     /* ships left, to the left of centre */
-        sshape(cx - 30 * k - i * 24 * k, 22 * k, 9 * k, -PI / 2, SH_SHIP, 9, 0, 0xffffffffu, 0.9f);
+        glow_w = 5; sshape(cx - 30 * k - i * 24 * k, 22 * k, 9 * k, -PI / 2, SH_SHIP, 9, 0, 0xffffffffu, 0.9f); glow_w = 14;
     for (i = 0; i < bombs && i < 9; i++) {   /* bombs, to the right */
         float bx = cx + 30 * k + i * 24 * k, by = 22 * k, rr = 7 * k, lx = 0, ly = 0;
         int s;
@@ -3223,7 +3224,11 @@ static void draw_world(void)
     for (i = 0; i < MAX_UNITS; i++)
         if (un[i].type) draw_unit(&un[i]);
     if (pl.alive) {
+        /* the ship is only about 20 px across on the Vita's screen: with the
+         * usual 14 px glow its opening and inner V ran together into a blob */
+        glow_w = 5;
         wshape(pl.x, pl.y, 8, pl.ang, SH_SHIP, 9, 0, 0xffffffffu, 1);
+        glow_w = 14;
         /* Player::RenderSub 0x3d524 draws the model's second part, "shield",
          * while the shield is up: a white circle of radius 12 and 40 sides
          * (the player model, Data.bin Model 28). Blinking in the last second. */
@@ -3553,7 +3558,7 @@ int game_frame(double dt, const PlatInput *in)
                 fmt_num(num, sizeof num, (long)bests[m]);
                 text(scr_w * 0.62f, y + 2 * k, 13 * k, 0, sel ? PHOS_MID : PHOS_DIM, 1, num);
             }
-            if (sel) sshape(scr_w * 0.40f - 18 * k, y + 9 * k, 8 * k, 0, SH_SHIP, 9, 0, 0xffffffffu, 1);
+            if (sel) { glow_w = 5; sshape(scr_w * 0.40f - 18 * k, y + 9 * k, 8 * k, 0, SH_SHIP, 9, 0, 0xffffffffu, 1); glow_w = 14; }
         }
         if (mode == M_SEQUENCE && !seq_loaded)
             text(scr_w / 2.0f, 425 * k, 13 * k, 1, PHOS_MID, 1, "SEQUENCE NEEDS LEVELS.TXT IN APP_DATA (RUN PREP_ASSETS)");

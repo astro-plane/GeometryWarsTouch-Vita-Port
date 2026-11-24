@@ -52,8 +52,15 @@ else()
     SceLibKernel_stub SceKernelThreadMgr_stub     # pinning the threads to cores
   )
 
+  # The home-screen icon is the app's own, made from your IPA by prep_assets.py;
+  # the placeholder in sce_sys/ is used until then.
+  if(EXISTS "${CMAKE_SOURCE_DIR}/app_data/icon0.png")
+    set(VPK_ICON app_data/icon0.png)
+  else()
+    set(VPK_ICON sce_sys/icon0.png)
+  endif()
   set(VPK_FILES
-    FILE sce_sys/icon0.png sce_sys/icon0.png
+    FILE ${VPK_ICON} sce_sys/icon0.png
     FILE sce_sys/livearea/contents/bg.png sce_sys/livearea/contents/bg.png
     FILE sce_sys/livearea/contents/startup.png sce_sys/livearea/contents/startup.png
     FILE sce_sys/livearea/contents/template.xml sce_sys/livearea/contents/template.xml

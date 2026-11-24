@@ -10,6 +10,7 @@ sound is used; everything you see is drawn by this project's own code.
                               unpacked with Python alone)
   app_data/music/<name>.ogg   music (AAC in the app: needs ffmpeg)
   app_data/levels.txt         the Sequence level scripts, decoded from Data.bin
+  app_data/icon0.png          the Vita's home-screen icon, from the app's own icon
   app_data/manifest.txt       what was made; the game looks for this file
 
 Files already made are kept, so an interrupted run can be restarted.
@@ -107,6 +108,7 @@ def main():
     ap.add_argument('--music-dir', help='a folder of your own, better copies of the tracks (any format ffmpeg '
                     'reads: flac, wav, mp3, m4a...), named like the game\'s: "Pacifism.flac", "Main Menu.mp3", '
                     '"retro_evolved.wav"; these are used instead of the app\'s mono AAC, in stereo')
+    ap.add_argument('--redo-icon', action='store_true', help='make app_data/icon0.png again')
     ap.add_argument('--redo-music', action='store_true',
                     help='convert the music again even where app_data already has it (after a quality change)')
     a = ap.parse_args()
@@ -152,6 +154,28 @@ def main():
             for n in sorted(levels):
                 f.write('level %d\n%s\n' % (n, levels[n].replace('\r', '')))
         print('%d Sequence level scripts' % len(levels))
+
+    # ---- the Vita's home-screen icon: the app's own icon ----
+    # iTunesArtwork (512x512) is the same picture as the app's 57/72 px icons,
+    # at the best resolution; the Vita wants 128x128 with 8-bit colour.
+    art = 'iTunesArtwork' if 'iTunesArtwork' in names else None
+    if not art:
+        try:
+            info = plistlib.loads(z.read(APP + 'Info.plist'))
+            files = [APP + f for f in info.get('CFBundleIconFiles', []) if APP + f in names]
+            art = max(files, key=lambda f: z.getinfo(f).file_size) if files else None
+        except Exception:
+            art = None
+    icon = os.path.join(a.out, 'icon0.png')
+    if art and a.ffmpeg and (not os.path.exists(icon) or a.redo_icon):
+        with tempfile.TemporaryDirectory() as td:
+            src = os.path.join(td, 'art')
+            with open(src, 'wb') as f:
+                f.write(z.read(art))
+            r = subprocess.run([a.ffmpeg, '-v', 'error', '-y', '-i', src, '-vf',
+                                'scale=128:128:flags=lanczos,split[a][b];[a]palettegen=max_colors=256[p];'
+                                '[b][p]paletteuse=dither=none', '-frames:v', '1', '-pix_fmt', 'pal8', icon])
+            print('Vita icon from %s' % art if r.returncode == 0 else 'could not make the Vita icon')
 
     # ---- music ----
     aacs = sorted(n for n in names if n.startswith(APP) and n.endswith('.aac') and n.count('/') == 2)

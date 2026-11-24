@@ -112,6 +112,10 @@ python3 tools/prep_assets.py ~/Downloads/GWarsTouch_v1.2.0_os30.ipa app_data --r
 If something looks wrong on the Vita, `ux0:data/gwvita/log.txt` lists the
 renderer and any draw or texture the Vita refused.
 
+`prep_assets.py` also makes `app_data/icon0.png`, the Vita's home-screen icon,
+from the app's own icon (the IPA's 512x512 `iTunesArtwork`, at 128x128 in 8-bit
+colour); the build uses it in place of the placeholder in `sce_sys/`.
+
 The start-up splash (shown for 9 seconds while the sounds load) is
 `app_data/splash.bmp`, made from a picture of your own:
 
