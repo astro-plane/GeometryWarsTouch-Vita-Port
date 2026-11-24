@@ -3313,7 +3313,7 @@ static void start_game(void)                 /* the mode's Gr* function, ResetGa
     cg.delay = 1;                            /* ResetGameControl 0x0005b4a4 */
     memset(&sq, 0, sizeof sq);
     gate_chain = 0; gate_last_t = -10;
-    next_bomb_at = 1000; next_life_at = 1000;   /* TEST: the original is 100000 */
+    next_bomb_at = 100000; next_life_at = 100000;
     kills = 0; best_beaten = 0; deaths = 0;
     play_t = 0;
     memset(&lc, 0, sizeof lc);
