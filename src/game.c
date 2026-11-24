@@ -3417,6 +3417,10 @@ int game_frame(double dt, const PlatInput *in)
     }
 
     grid_dt = 0;                             /* set below by scenes that move the grid */
+    {                                        /* for log.txt */
+        static const char *const sn[] = { "title", "play", "over", "load", "splash" };
+        plat_note(scene == SC_PLAY && paused ? "paused" : sn[scene]);
+    }
     switch (scene) {
     case SC_TITLE:
         if (frand() < fdt * 1.5f)            /* the grid ripples on its own */

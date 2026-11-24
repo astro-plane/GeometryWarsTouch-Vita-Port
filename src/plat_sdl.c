@@ -513,7 +513,7 @@ const char *plat_data_dir(void) { return data_dir; }
 const char *plat_save_file(void) { return save_file; }
 
 /* A short log of what went wrong (ux0:data/gwvita/log.txt on the Vita), so a
- * problem seen on the console can be read back: at most 80 lines a run. */
+ * problem seen on the console can be read back: at most 200 lines a run. */
 static void plat_log(const char *fmt, ...)
 {
     static int lines;
@@ -521,7 +521,7 @@ static void plat_log(const char *fmt, ...)
     char path[700], *slash;
     va_list ap;
     FILE *f;
-    if (lines >= 80) return;
+    if (lines >= 200) return;
     if (!lock) lock = SDL_CreateMutex();
     if (lock) SDL_LockMutex(lock);
     SDL_snprintf(path, sizeof path, "%s", save_file);
@@ -584,6 +584,7 @@ typedef struct {
     int blend, v0, quads;
     SDL_FRect rc;
     Uint32 rgba;
+    int src;                         /* 0 sprites, 1 grid/spark batch */
 } Cmd;
 typedef struct {
     SDL_Vertex *v;
@@ -756,7 +757,7 @@ void plat_sprites(PlatTex *t, int sx, int sy, int sw, int sh, const PlatSprite *
         f->v = nv;
         if (!(c = new_cmd(f)))
             return;
-        c->fill = 0; c->t = t; c->blend = blend; c->v0 = f->nv; c->quads = n;
+        c->fill = 0; c->t = t; c->blend = blend; c->v0 = f->nv; c->quads = n; c->src = 0;
         for (i = 0; i < n; i++)
             quad_verts(&f->v[f->nv + i * 4], &s[i], u0, v0, u1, v1);
         f->nv += n * 4;
@@ -777,24 +778,58 @@ void plat_fill(float x, float y, float w, float h, unsigned rgba)
     rc.x = x; rc.y = y; rc.w = w; rc.h = h;
     if (threaded) {
         Cmd *c = new_cmd(&frames[f_write]);
-        if (c) { c->fill = 1; c->rc = rc; c->rgba = rgba; }
+        if (c) { c->fill = 1; c->rc = rc; c->rgba = rgba; c->src = 0; }
         return;
     }
     draw_fill(&rc, rgba);
 }
 
+/* what the game says it is doing, and a once-a-second line in log.txt */
+static char note[32] = "start";
+void plat_note(const char *what) { SDL_snprintf(note, sizeof note, "%s", what); }
+
+static int bad_vertex(const SDL_Vertex *v)  /* NaN, infinite or absurdly far off */
+{
+    float x = v->position.x, y = v->position.y, u = v->tex_coord.x, t = v->tex_coord.y;
+    return !(x > -1e5f && x < 1e5f && y > -1e5f && y < 1e5f && u > -2 && u < 3 && t > -2 && t < 3);
+}
+
 static void draw_frame(const Frame *f)
 {
-    int i;
+    static double next_log;
+    static long shown, bad_cmds[2], bad_verts;
+    int i, j, fills = 0, fill_a = 0;
     clear_screen();
     for (i = 0; i < f->nc; i++) {
         const Cmd *c = &f->c[i];
-        if (c->fill)
+        if (c->fill) {
             draw_fill(&c->rc, c->rgba);
-        else
-            draw_geometry(c->t, c->blend, f->v + c->v0, c->quads);
+            fills++;
+            if ((int)(c->rgba & 255) > fill_a) fill_a = (int)(c->rgba & 255);
+        } else {
+            /* a command with a bad vertex is dropped whole: on the Vita one such
+             * vertex can black out or garble the frame */
+            const SDL_Vertex *v = f->v + c->v0;
+            int bad = 0;
+            for (j = 0; j < c->quads * 4; j++)
+                if (bad_vertex(&v[j])) bad++;
+            if (bad) {
+                if (!bad_cmds[0] && !bad_cmds[1])
+                    plat_log("bad vertex in %s (%s): %g %g uv %g %g", c->src ? "grid/spark batch" : "sprites", note,
+                             v[0].position.x, v[0].position.y, v[0].tex_coord.x, v[0].tex_coord.y);
+                bad_cmds[c->src]++; bad_verts += bad;
+                continue;
+            }
+            draw_geometry(c->t, c->blend, v, c->quads);
+        }
     }
     SDL_RenderPresent(ren);          /* waits for the display */
+    shown++;
+    if (plat_time() >= next_log) {
+        plat_log("%s: frame %ld, %d cmds, %d verts, %d fills (darkest alpha %d); dropped so far %ld sprite / %ld batch cmds (%ld bad verts)",
+                 note, shown, f->nc, f->nv, fills, fill_a, bad_cmds[0], bad_cmds[1], bad_verts);
+        next_log = plat_time() + (shown < 60 * 40 ? 1.0 : 10.0);
+    }
 }
 
 typedef struct { int (*frame)(double, const PlatInput *); } GameArgs;
@@ -887,7 +922,7 @@ void plat_batch_draw(PlatBatch *b, int blend)
         if (!nv) return;
         f->v = nv;
         if (!(c = new_cmd(f))) return;
-        c->fill = 0; c->t = b->t; c->blend = blend; c->v0 = f->nv; c->quads = b->nv / 4;
+        c->fill = 0; c->t = b->t; c->blend = blend; c->v0 = f->nv; c->quads = b->nv / 4; c->src = 1;
         memcpy(&f->v[f->nv], b->v, (size_t)b->nv * sizeof *b->v);
         f->nv += b->nv;
         return;

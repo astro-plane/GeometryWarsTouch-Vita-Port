@@ -71,6 +71,7 @@ void plat_run(int (*frame)(double dt, const PlatInput *in));
 
 void plat_sfx(const char *name);             /* app_data/sfx/<name>.wav */
 int plat_loading(void);                      /* nonzero while the effects are still being loaded */
+void plat_note(const char *what);            /* a word on what the game is doing, for log.txt */
 int plat_music_play(const char *path);       /* Ogg Vorbis, 44.1 kHz; 0 on success */
 void plat_music_stop(void);
 void plat_music_pause(int paused);
