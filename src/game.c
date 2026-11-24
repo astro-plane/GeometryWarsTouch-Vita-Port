@@ -456,9 +456,18 @@ static void spark(float x, float y, float vx, float vy, float life, unsigned c)
     p->x = x; p->y = y; p->vx = vx; p->vy = vy; p->life = p->max = life; p->c = c;
 }
 
+/* diagnostics: a line in log.txt, for finding what a crash was doing */
+static void dbg(const char *fmt, float a, float b, float c)
+{
+    char s[160];
+    snprintf(s, sizeof s, fmt, a, b, c);
+    plat_log_line(s);
+}
+
 static void burst(float x, float y, unsigned c, int n, float speed)
 {
     int i;
+    if (n >= 100) dbg("burst n=%.0f parts=%.0f at %.0f", (float)n, (float)n_parts, x);
     for (i = 0; i < n; i++) {
         float a = frand() * 2 * PI, s = speed * (0.25f + 0.75f * frand());
         spark(x, y, cosf(a) * s, sinf(a) * s, frange(0.5f, 1.3f), c);
@@ -823,9 +832,11 @@ static void kill_unit(int i, int dmg)
     int type = u->type, k;
     float x = u->x, y = u->y;
     if (!type) return;
+    if (type == U_BLACKHOLE) dbg("blackhole killed at x=%.0f y=%.0f parts=%.0f", x, y, (float)n_parts);
     if (type == U_HILL || type == U_CYTO || type == U_MINELAYER || type == U_BLACKHOLE) {
         burst(x, y, ut[type].color, 12, 160);
         u->type = U_NONE;
+        if (type == U_BLACKHOLE) plat_log_line("blackhole cleared");
         return;
     }
     if (dmg != DMG_TOUCH && dmg != DMG_EATEN) casual_kill(type);
