@@ -725,6 +725,11 @@ static void add_points(int base, int dmg, float x, float y)
     score += pts;
     if (!(modes[mode].flags & 1) && score >= next_life_at) {   /* extra ship, then the next one at 10x */
         if (lives < 9) lives++;
+        {   /* diagnostics: ships earned */
+            char s[96];
+            snprintf(s, sizeof s, "1up earned at score %lld, now %d lives", score, lives);
+            plat_log_line(s);
+        }
         next_life_at *= 10;
         sfx("pickup_extralife", 30, 0);
     }
