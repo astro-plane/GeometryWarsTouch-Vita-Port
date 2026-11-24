@@ -3140,8 +3140,10 @@ static void hud(void)
     snprintf(buf, sizeof buf, "HI %s", num);
     text(scr_w - 16 * k, 12 * k, 16 * k, 2, 0x9ad0ffffu, 0.9f, buf);
     text(scr_w - 16 * k, 34 * k, 12 * k, 2, 0x82f532ffu, 0.8f, modes[mode].name);   /* which mode this is */
+    glow_w = 5;
     for (i = 0; i < lives && i < 9; i++)     /* ships left, to the left of centre */
-        glow_w = 5; sshape(cx - 30 * k - i * 24 * k, 22 * k, 9 * k, -PI / 2, SH_SHIP, 9, 0, 0xffffffffu, 0.9f); glow_w = 14;
+        sshape(cx - 30 * k - i * 24 * k, 22 * k, 9 * k, -PI / 2, SH_SHIP, 9, 0, 0xffffffffu, 0.9f);
+    glow_w = 14;
     for (i = 0; i < bombs && i < 9; i++) {   /* bombs, to the right */
         float bx = cx + 30 * k + i * 24 * k, by = 22 * k, rr = 7 * k, lx = 0, ly = 0;
         int s;
