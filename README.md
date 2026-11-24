@@ -1,4 +1,4 @@
-# Neon Grid – a GWars:Touch style shooter for the PS Vita
+# Geometry Wars 2 Vita Port Neon Grid Engine – a Geometry Wars:Touch style shooter for the PS Vita
 
 A twin-stick arena shooter written from scratch in C for the PS Vita, in the
 manner of GWars:Touch (Activision, 2010, iPhone). It does not run or translate
