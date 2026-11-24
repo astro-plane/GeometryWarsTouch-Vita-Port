@@ -467,6 +467,9 @@ static void dbg(const char *fmt, float a, float b, float c)
 static void burst(float x, float y, unsigned c, int n, float speed)
 {
     int i;
+    /* crowded screen: spawn fewer sparks so the frame stays within budget */
+    if (n_parts > 900) n /= 4;
+    else if (n_parts > 500) n /= 2;
     if (n >= 100) dbg("burst n=%.0f parts=%.0f at %.0f", (float)n, (float)n_parts, x);
     for (i = 0; i < n; i++) {
         float a = frand() * 2 * PI, s = speed * (0.25f + 0.75f * frand());
