@@ -62,6 +62,14 @@ def caf_to_wav(data):
             b'data' + struct.pack('<I', len(pcm)) + pcm)
 
 
+# What soundtrack rips call the game's tracks (letters and digits only, lower case)
+MUSIC_ALIASES = {
+    'menutheme': 'mainmenu', 'menu': 'mainmenu', 'title': 'mainmenu', 'titletheme': 'mainmenu',
+    'evolved': 'retroevolved', 'geometrywars': 'retroevolved',
+    'blackhole': 'blackhole', 'whirlpool': 'blackhole',
+}
+
+
 def music_name(fn):
     """'Retro Evolved.wav.aac' -> 'retro_evolved'"""
     base = os.path.basename(fn).split('.wav')[0]
@@ -227,7 +235,9 @@ def main():
         for fn in sorted(os.listdir(a.music_dir)):
             base, ext = os.path.splitext(fn)
             if ext.lower() in exts:
-                own[key(base.split('.wav')[0])] = os.path.join(a.music_dir, fn)
+                k = key(base.split('.wav')[0])
+                k = MUSIC_ALIASES.get(k, k)          # the soundtrack's names for the same tracks
+                own[k] = os.path.join(a.music_dir, fn)
         wanted = {key(music_name(n)) for n in aacs}
         for k in sorted(set(own) - wanted):
             print('  --music-dir: %s matches no track (they are: %s)' % (
