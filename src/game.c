@@ -488,25 +488,23 @@ static void parts_update(float dt)
     }
 }
 
-/* the sparks as lines, on the helper core (part of grid_job): each spark is a
- * thin bright core with a wide faint halo, so the debris reads as glowing */
-static PlatLine plines[2 * MAX_PART];
+/* the sparks as lines, on the helper core (part of grid_job) */
+static PlatLine plines[MAX_PART];
 static void parts_lines(void)
 {
     int i;
     float k = scr_h / 544.0f;
     for (i = 0; i < n_parts; i++) {
         Part *p = &parts[i];
-        PlatLine *h = &plines[2 * i], *l = &plines[2 * i + 1];
+        PlatLine *l = &plines[i];
         float a = p->life / p->max, sp = sqrtf(p->vx * p->vx + p->vy * p->vy);
         float len = clampf(sp * 0.02f, 1.0f, 7) * zoom, x = wx(p->x), y = wy(p->y);
         if (sp < 1) sp = 1;
         l->x0 = x - p->vx / sp * len; l->y0 = y - p->vy / sp * len;
         l->x1 = x; l->y1 = y; l->w = 2.2f * k; l->rgba = with_alpha(p->c, a);
-        *h = *l; h->w = 6.5f * k; h->rgba = with_alpha(p->c, a * 0.28f);
     }
     plat_batch_lines(part_batch, atlas, ksrc[K_LINE][0], ksrc[K_LINE][1], ksrc[K_LINE][2], ksrc[K_LINE][3],
-                     plines, 2 * n_parts);
+                     plines, n_parts);
 }
 
 /* ============================================================= SIMULATION
@@ -3427,7 +3425,7 @@ int game_init(int screen_w, int screen_h)
     }
     atlas = plat_tex_create(px8, aw, ah);
     grid_batch = plat_batch_new(MAX_GLINES);
-    part_batch = plat_batch_new(2 * MAX_PART);   /* a core and a halo per spark */
+    part_batch = plat_batch_new(MAX_PART);
     free(px8);
     if (!atlas) return -1;
     f = fopen(plat_save_file(), "r");
