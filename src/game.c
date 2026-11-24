@@ -392,8 +392,7 @@ static float grid_dt;
 static void grid_job(void *arg)
 {
     (void)arg;
-    /* never one big step after a slow frame: the springs would fly apart */
-    if (grid_dt > 0) grid_update(fminf(grid_dt, 1.0f / 30));
+    if (grid_dt > 0) grid_update(grid_dt);
     grid_draw();
     plat_batch_lines(grid_batch, atlas, ksrc[K_GLINE][0], ksrc[K_GLINE][1], ksrc[K_GLINE][2], ksrc[K_GLINE][3],
                      glines, n_glines);
