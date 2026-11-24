@@ -29,7 +29,7 @@ static void reserve_frames(void);
 
 struct PlatTex { SDL_Texture *t; int w, h; };
 typedef struct { char name[48]; Sint16 *pcm; Uint32 frames; int failed; } Sound;
-typedef struct { const Sound *s; Uint32 pos; } Voice;
+typedef struct { const Sound *s; Uint32 pos; int gain; } Voice;   /* gain: 256 = full */
 
 static SDL_Window *win;
 static SDL_Renderer *ren;
@@ -53,6 +53,7 @@ static volatile int loader_quit;
 static SDL_atomic_t loader_done;
 #define REQ_N 64
 static const Sound *req[REQ_N];
+static int req_gain[REQ_N];             /* each request's gain, 256 = full */
 static SDL_atomic_t req_head, req_tail;
 
 /* music state, shared with the audio callback (guarded by SDL_LockAudioDevice) */
@@ -90,6 +91,7 @@ static void mix_cb(void *ud, Uint8 *stream, int len)
                 if (voices[v].pos >= oldest) { oldest = voices[v].pos; pick = v; }
         voices[pick].s = snd;
         voices[pick].pos = 0;
+        voices[pick].gain = req_gain[t % REQ_N];
     }
 
     if (music_open && !music_paused && !music_eof) {
@@ -106,8 +108,8 @@ static void mix_cb(void *ud, Uint8 *stream, int len)
             for (i = 0; i < got; i++) {
                 Sint16 l = dec_buf[i * music_channels];
                 Sint16 r = music_channels > 1 ? dec_buf[i * music_channels + 1] : l;
-                out[(done + i) * 2] = (Sint16)(l * 3 / 4);   /* leave room for the effects */
-                out[(done + i) * 2 + 1] = (Sint16)(r * 3 / 4);
+                out[(done + i) * 2] = (Sint16)(l * 7 / 8);   /* leave a little room for the effects */
+                out[(done + i) * 2 + 1] = (Sint16)(r * 7 / 8);
             }
             done += got;
         }
@@ -118,7 +120,7 @@ static void mix_cb(void *ud, Uint8 *stream, int len)
         if (!vo->s)
             continue;
         for (i = 0; i < frames && vo->pos < vo->s->frames; i++, vo->pos++) {
-            int s = vo->s->pcm[vo->pos] / 2;
+            int s = vo->s->pcm[vo->pos] * vo->gain / 512;   /* gain 256 = half scale */
             int l = out[i * 2] + s, r = out[i * 2 + 1] + s;
             out[i * 2] = (Sint16)(l > 32767 ? 32767 : l < -32768 ? -32768 : l);
             out[i * 2 + 1] = (Sint16)(r > 32767 ? 32767 : r < -32768 ? -32768 : r);
@@ -277,6 +279,11 @@ int plat_loading(void)
 
 void plat_sfx(const char *name)
 {
+    plat_sfx_vol(name, 1);
+}
+
+void plat_sfx_vol(const char *name, float vol)
+{
     int i, ready, h;
     const Sound *s = NULL;
     if (!audio || !name)
@@ -291,6 +298,7 @@ void plat_sfx(const char *name)
     if (h - SDL_AtomicGet(&req_tail) >= REQ_N)
         return;                              /* the ring is full: drop it */
     req[h % REQ_N] = s;
+    req_gain[h % REQ_N] = (int)(256 * (vol < 0 ? 0 : vol > 1 ? 1 : vol));
     SDL_MemoryBarrierRelease();
     SDL_AtomicSet(&req_head, h + 1);
 }

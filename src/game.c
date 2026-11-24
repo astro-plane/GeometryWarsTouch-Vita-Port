@@ -494,13 +494,18 @@ static void parts_lines(void)
  * write-ups.  Addresses are in the armv7 slice of GWTouchPad 1.2.0. */
 
 static double sfx_last[64];
-static void sfx(const char *name, int slot, double gap)  /* rate-limited per slot */
+static void sfx_vol(const char *name, int slot, double gap, float vol)  /* rate-limited per slot */
 {
     if (slot >= 0 && slot < 64) {
         if (now_t - sfx_last[slot] < gap) return;
         sfx_last[slot] = now_t;
     }
-    plat_sfx(name);
+    plat_sfx_vol(name, vol);
+}
+
+static void sfx(const char *name, int slot, double gap)
+{
+    sfx_vol(name, slot, gap, 1);
 }
 
 static float wrap_pi(float a)                /* the fmodf(a + pi, 2pi) - pi idiom used throughout */
@@ -2555,7 +2560,7 @@ static void fire_volley(float dx, float dy)
                 break;
             }
     pl.cooldown += 0.1f;
-    sfx("Fire_normal", 17, 0.09);
+    sfx_vol("Fire_normal", 17, 0.09, 0.8f);  /* a little quieter than the rest */
 }
 
 static long long bests[M_COUNT];
@@ -2628,7 +2633,13 @@ static void update_player(const PlatInput *in)
         pl.vy = (pl.vy + ly * 50) * 0.8f;
         pl.ang += wrap_pi(atan2f(ly, lx) - pl.ang) * 0.35f;
     }
-    if (pl.protect > 0) pl.protect -= TICK;
+    if (pl.protect > 0) {                    /* Player::Tick 0x3b528: the shield (+0x8c) */
+        pl.protect -= TICK;
+        /* in its last second it blinks, 5 ticks on and 5 off, and Shield_on
+         * (sound 8) marks each blink */
+        if (pl.protect > 0 && pl.protect < 1 && (int)(60 * pl.protect) % 10 == 4)
+            sfx("Shield_on", 22, 0.1);
+    }
     if (pl.bomb_cd > 0) pl.bomb_cd -= TICK;
     if ((in->pressed & (BTN_L | BTN_R)) && pl.bomb_cd <= 0) {
         pl.bomb_cd = 0.2f;
@@ -3211,8 +3222,14 @@ static void draw_world(void)
         }
     for (i = 0; i < MAX_UNITS; i++)
         if (un[i].type) draw_unit(&un[i]);
-    if (pl.alive && !(pl.protect > 0 && ((int)(pl.protect * 12) & 1)))
+    if (pl.alive) {
         wshape(pl.x, pl.y, 8, pl.ang, SH_SHIP, 9, 0, 0xffffffffu, 1);
+        /* Player::RenderSub 0x3d524 draws the model's second part, "shield",
+         * while the shield is up: a white circle of radius 12 and 40 sides
+         * (the player model, Data.bin Model 28). Blinking in the last second. */
+        if (pl.protect > 0 && (pl.protect > 1 || (int)(60 * pl.protect) % 10 <= 4))
+            wcircle(pl.x, pl.y, 12, 40, 0xffffffffu, 1);
+    }
     /* the sparks are built on the helper core (grid_job) */
 }
 
@@ -3255,7 +3272,7 @@ static void start_game(void)                 /* the mode's Gr* function, ResetGa
     lc.timer = 1.0f;
     lc.wall_i = 5;                           /* ResetGameControl: the walls have not been shuffled yet */
     memset(&pl, 0, sizeof pl);
-    pl.alive = 1; pl.r = 7; pl.ang = -PI / 2; pl.protect = 1.0f;
+    pl.alive = 1; pl.r = 7; pl.ang = -PI / 2; pl.protect = 3.33f;   /* Player::Player: +0x8c = 3.33 */
     if (mode == M_KING) {                    /* UpdateGame: three zones to start, one in the middle */
         float x, y;
         hill_new(0, 0);
