@@ -2830,16 +2830,6 @@ static void sim_tick(const PlatInput *in)
         if (pl.x > AW - pl.r) { pl.x = AW - pl.r; pl.vx = 0; }
         if (pl.y < -AH + pl.r) { pl.y = -AH + pl.r; pl.vy = 0; }
         if (pl.y > AH - pl.r) { pl.y = AH - pl.r; pl.vy = 0; }
-        /* the trail: sparks shed behind the ship while it moves, in the cycling colour */
-        {
-            float sp = sqrtf(pl.vx * pl.vx + pl.vy * pl.vy);
-            if (sp > 60) {
-                int n = sp > 400 ? 3 : 1, k;
-                for (k = 0; k < n; k++)
-                    spark(pl.x, pl.y, -pl.vx * 0.2f + frange(-18, 18), -pl.vy * 0.2f + frange(-18, 18),
-                          frange(0.35f, 0.7f), trail_colour());
-            }
-        }
     }
 
     /* bullets */
